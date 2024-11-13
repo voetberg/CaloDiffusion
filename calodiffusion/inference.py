@@ -61,11 +61,11 @@ def inference_parser():
         type=int,
         help="Skip some iterations in the sampling (noisiest iters most unstable)",
     )
-    parser.add_argument(
-        "--sample_algo",
-        default="ddpm",
-        help="What sampling algorithm (ddpm, ddim, cold, cold2)",
-    )
+    # parser.add_argument(
+    #     "--sample_algo",
+    #     default="ddpm",
+    #     help="What sampling algorithm (ddpm, ddim, cold, cold2)",
+    # )
 
     parser.add_argument(
         "--layer-only",
@@ -112,7 +112,6 @@ def model_forward(flags, config, data_loader, model, sample_steps):
             layers=layers_,
             num_steps=sample_steps,
             cold_noise_scale=config.get("COLD_NOISE", 1.0),
-            sample_algo=flags.sample_algo,
             debug=flags.debug,
             sample_offset=flags.sample_offset,
         )
@@ -275,7 +274,7 @@ def inference(flags, config):
 
         generated = generated * (np.reshape(mask, (1, -1)) == 0)
 
-    fout = f"{model_instance.checkpoint_folder}/generated_{config['CHECKPOINT_NAME']}_{flags.sample_algo}{sample_steps}.h5"
+    fout = f"{model_instance.checkpoint_folder}/generated_{config['CHECKPOINT_NAME']}_{config.get('SAMPLER', '').lower()}{sample_steps}.h5"
 
     print("Creating " + fout)
     with h5py.File(fout, "w") as h5f:

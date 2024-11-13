@@ -9,22 +9,24 @@ from calodiffusion.utils import utils
 tqdm = utils.import_tqdm()
 
 class Train(ABC): 
-    def __init__(self, flags, config, load_data:bool=True) -> None:
+    def __init__(self, flags, config, load_data:bool=True, save_model: bool = True) -> None:
         self.device = utils.get_device()
+        self.save_model = save_model
+
         if load_data: 
             self.loader_train, self.loader_val = utils.load_data(flags, config)
+        
         self.config = config
         self.flags = flags
 
-        self.checkpoint_folder = f"{flags.checkpoint_folder.strip('/')}/{config['CHECKPOINT_NAME']}_{flags.model}/"
-        
-        if not os.path.exists(self.checkpoint_folder):
-            os.makedirs(self.checkpoint_folder)
+        if self.save_model: 
+            self.checkpoint_folder = f"{flags.checkpoint_folder.strip('/')}/{config['CHECKPOINT_NAME']}_{flags.model}/"
+            if not os.path.exists(self.checkpoint_folder):
+                os.makedirs(self.checkpoint_folder)
 
-        os.system(
-            "cp {} {}/config.json".format(flags.config, self.checkpoint_folder)
-        )  # bkp of config file
-
+            os.system(
+                "cp {} {}/config.json".format(flags.config, self.checkpoint_folder)
+            )  # bkp of config file
 
     @abstractmethod
     def init_model(self): 
@@ -101,24 +103,25 @@ class Train(ABC):
         scheduler,
         early_stopper,
     ):
-        final_path = os.path.join(self.checkpoint_folder, f"{name}.pth")
-        torch.save(
-            {
-                "epoch": epoch,
-                "model_state_dict": model_state,
-                "optimizer_state_dict": optimizer.state_dict(),
-                "scheduler_state_dict": scheduler.state_dict(),
-                "train_loss_hist": training_losses,
-                "val_loss_hist": validation_losses,
-                "early_stop_dict": early_stopper.__dict__,
-            },
-            final_path,
-        )
+        if self.save_model: 
+            final_path = os.path.join(self.checkpoint_folder, f"{name}.pth")
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state_dict": model_state,
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict(),
+                    "train_loss_hist": training_losses,
+                    "val_loss_hist": validation_losses,
+                    "early_stop_dict": early_stopper.__dict__,
+                },
+                final_path,
+            )
 
-        with open(self.checkpoint_folder + f"/{name}_training_losses.txt", "w") as tfileout:
-            tfileout.write("\n".join("{}".format(tl) for tl in training_losses) + "\n")
-        with open(self.checkpoint_folder + f"/{name}_validation_losses.txt", "w") as vfileout:
-            vfileout.write("\n".join("{}".format(vl) for vl in validation_losses) + "\n")
+            with open(self.checkpoint_folder + f"/{name}_training_losses.txt", "w") as tfileout:
+                tfileout.write("\n".join("{}".format(tl) for tl in training_losses) + "\n")
+            with open(self.checkpoint_folder + f"/{name}_validation_losses.txt", "w") as vfileout:
+                vfileout.write("\n".join("{}".format(vl) for vl in validation_losses) + "\n")
 
 
     def train(self): 
@@ -158,8 +161,7 @@ class Train(ABC):
             num_epochs, 
             training_losses, 
             val_losses
-        )
-        
+        )    
         # Also save at the end of training
         self.save(
             model.state_dict(),
@@ -171,3 +173,5 @@ class Train(ABC):
             scheduler=scheduler,
             early_stopper=early_stopper,
         )
+        
+        return model, training_losses, val_losses

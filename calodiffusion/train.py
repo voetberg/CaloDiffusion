@@ -1,11 +1,8 @@
 from argparse import ArgumentParser
 from calodiffusion.utils import utils
-from calodiffusion.train import Train, Diffusion
+from calodiffusion.train import Diffusion
 
-
-models: dict[str, Train] = {
-    "diffusion": Diffusion, 
-}
+models = {model.__name__: model for model in [Diffusion]}
 
 def training_settings():
     parser = ArgumentParser()
@@ -15,8 +12,7 @@ def training_settings():
     )
     parser.add_argument(
         "--model",
-        default="Diffu",
-        help="Diffusion model to train. Options are: VPSDE, VESDE and subVPSDE",
+        default="Diffusion",
         choices=models.keys()
     )
 

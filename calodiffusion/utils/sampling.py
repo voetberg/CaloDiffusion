@@ -171,6 +171,7 @@ def edm_sampler( model, x, E, layers = None, sample_algo = 'euler', randn_like=t
                 denoised_2 = model.denoise(x_2,  sigma=t_mid_full, **extra_args).to(torch.float32)
                 d_2 = (x_2 - denoised_2) / t_mid
                 x_next = x_hat + h * d_2
+                
             elif (sample_algo == 'restart'):
                 
                 x_next = x_hat + h * d_cur
