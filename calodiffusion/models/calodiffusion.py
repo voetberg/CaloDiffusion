@@ -66,12 +66,12 @@ class CaloDiffusion(Diffusion):
     def forward(self, x, E, time, layers, controls=None):
 
         if self.NN_embed is not None:
-            x = self.NN_embed.enc(x).to(x.device)
+            x = self.NN_embed.enc(x.float()).to(x.device)
         if self.layer_cond and layers is not None:
             E = torch.cat([E, layers], dim=1)
 
-        rz_phi = self.add_RZPhi(x)
-        out = self.model(rz_phi, cond=E, time=time.to(torch.float32), controls=controls)
+        rz_phi = self.add_RZPhi(x).float()
+        out = self.model(rz_phi, cond=E.float(), time=time.float(), controls=controls)
 
         if self.NN_embed is not None:
             out = self.NN_embed.dec(out).to(x.device)
@@ -138,8 +138,7 @@ class CaloDiffusion(Diffusion):
             sigma2 = sigma**2
             c_skip = 1. / (sigma2 + 1.)
             c_out = torch.sqrt(sigma2) / (sigma2 + 1.).sqrt()
-
-        pred = self.forward(x * (c_in), E=E, time=t_emb, layers = layers)
+        pred = self.forward(x * c_in, E=E, time=t_emb, layers = layers)
         return self.loss_function.apply_scaling_skips(pred, x,  c_in, c_skip, c_out, sigma)
 
     def __call__(self, x, **kwargs):
