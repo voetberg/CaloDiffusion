@@ -1,4 +1,4 @@
-from argparse import ArgumentParser
+import argparse
 import os
 
 import numpy as np
@@ -13,10 +13,10 @@ models = {model.__name__: model for model in [Diffusion]}
 
 
 def inference_parser():
-    parser = ArgumentParser()
+    parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "--data-folder", default="./data/", help="Folder containing data and MC files"
+        "-d", "--data-folder", default="./data/", help="Folder containing data and MC files"
     )
     parser.add_argument(
         "--plot-folder", default="./plots", help="Folder to save results"
@@ -61,11 +61,8 @@ def inference_parser():
         type=int,
         help="Skip some iterations in the sampling (noisiest iters most unstable)",
     )
-    # parser.add_argument(
-    #     "--sample_algo",
-    #     default="ddpm",
-    #     help="What sampling algorithm (ddpm, ddim, cold, cold2)",
-    # )
+    
+    parser.add_argument("--frac", help=argparse.SUPPRESS, default=0.75)
 
     parser.add_argument(
         "--layer-only",
@@ -89,6 +86,7 @@ def inference_parser():
 
     flags = parser.parse_args()
     config = LoadJson(flags.config)
+    config['flags'] = flags  # Access shortcut
     return flags, config
 
 
@@ -274,7 +272,7 @@ def inference(flags, config):
 
         generated = generated * (np.reshape(mask, (1, -1)) == 0)
 
-    fout = f"{model_instance.checkpoint_folder}/generated_{config['CHECKPOINT_NAME']}_{config.get('SAMPLER', '').lower()}{sample_steps}.h5"
+    fout = f"{model_instance.checkpoint_folder.rstrip('/')}/generated_{config['CHECKPOINT_NAME']}_{config.get('SAMPLER', '').lower()}{sample_steps}.h5"
 
     print("Creating " + fout)
     with h5py.File(fout, "w") as h5f:
