@@ -17,7 +17,7 @@ class Train(ABC):
         self.config = config
         self.flags = flags
 
-        self.checkpoint_folder = f"{flags.checkpoint_folder.strip('/')}/{config['CHECKPOINT_NAME']}_{self.__class__.__name__.removeprefix("Train")}/"
+        self.checkpoint_folder = f"{flags.checkpoint_folder.strip('/')}/{config['CHECKPOINT_NAME']}_{self.__class__.__name__.removeprefix('Train')}/"
         
         if hasattr(flags, "model_loc"): 
             if flags.model_loc is not None: 
