@@ -13,7 +13,6 @@ import torch
 
 from calodiffusion.utils import utils
 from calodiffusion.utils import plots as plot
-from calodiffusion.models import sample, loss
 
 
 class Diffusion(torch.nn.Module, ABC):
@@ -28,22 +27,10 @@ class Diffusion(torch.nn.Module, ABC):
         self.loss_type = loss_type
 
         loss_algo = self.config.get('TRAINING_OBJ', "noise_pred")
-        try: 
-            self.loss_function = getattr(
-                loss, loss_algo
-            )(self.config, self.nsteps, self.loss_type)
-
-        except AttributeError: 
-            raise ValueError("Loss '%s' is not supported" % loss_algo)
+        self.loss_function = utils.load_attr("loss", loss_algo)(self.config, self.nsteps, self.loss_type)
 
         sampler_algo = self.config.get("SAMPLER", "DDim")
-        try: 
-            self.sampler_algorithm = getattr(
-                sample, sampler_algo
-            )(self.config, sampler_algo.lower())
-            
-        except AttributeError: 
-            raise ValueError("Sampler '%s' is not supported" % sampler_algo)
+        self.sampler_algorithm = utils.load_attr("sampler", sampler_algo)(self.config, sampler_algo.lower())
 
         self.model = self.init_model()
         self.NN_embed = self.init_embedding_model()

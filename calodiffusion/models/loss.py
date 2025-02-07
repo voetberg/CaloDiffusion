@@ -97,10 +97,10 @@ class Loss(ABC):
             return  (weight * ((prediction - target) ** 2)).sum() / (torch.mean(weight) * np.prod(target.shape))
 
         losses = {
-            "l1": lambda y_hat, y: torch.nn.functional.l1_loss(y_hat, y),
+            "l1": lambda y_hat, y, weight=None: torch.nn.functional.l1_loss(y_hat, y),
             "l2": l2_loss,
-            "mse": lambda y_hat, y: torch.nn.functional.mse_loss(y_hat, y),
-            "huber": lambda y_hat, y: torch.nn.functional.smooth_l1_loss(y_hat, y),
+            "mse": lambda y_hat, y, weight=None: torch.nn.functional.mse_loss(y_hat, y),
+            "huber": lambda y_hat, y, weight=None: torch.nn.functional.smooth_l1_loss(y_hat, y),
         }
 
         if loss_type not in losses.keys(): 
