@@ -71,7 +71,7 @@ class CaloDiffusion(Diffusion):
             E = torch.cat([E, layers], dim=1)
 
         rz_phi = self.add_RZPhi(x)
-        out = self.model(rz_phi, cond=E, time=time.to(torch.float32), controls=controls)
+        out = self.model(rz_phi, cond=E.to(torch.float32), time=time.to(torch.float32), controls=controls)
 
         if self.NN_embed is not None:
             out = self.NN_embed.dec(out).to(x.device)
@@ -139,7 +139,7 @@ class CaloDiffusion(Diffusion):
             c_out = torch.sqrt(sigma2) / (sigma2 + 1.).sqrt()
 
 
-        pred = self.forward(x * c_in, E, t_emb, layers = layers)
+        pred = self.forward(x.to(torch.float32) * c_in, E.to(torch.float32), t_emb.to(torch.float32), layers = layers.to(torch.float32))
 
         if('noise_pred' in loss_function_name):
             return (x - sigma * pred)
