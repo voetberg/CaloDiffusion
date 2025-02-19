@@ -131,8 +131,8 @@ def model_forward(flags, config, data_loader, model, sample_steps):
         if flags.debug: 
             data.append(d_batch)
 
-        energies.append(E)
-        generated.append(batch_generated)
+        energies.append(E.cpu())
+        generated.append(batch_generated.cpu())
 
         if "layer" in config["SHOWERMAP"]:
             layers.append(layers_)
