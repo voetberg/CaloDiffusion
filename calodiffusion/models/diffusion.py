@@ -144,7 +144,7 @@ class Diffusion(torch.nn.Module, ABC):
             if debug:
                 data.append(d_batch)
 
-            energies.append(E.detach())
+            energies.append(E.cpu())
 
             if "layer" in self.config["SHOWERMAP"]:
                 layers.append(layers_)
