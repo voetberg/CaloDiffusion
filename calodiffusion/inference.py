@@ -17,8 +17,8 @@ class dotdict(dict):
     __delattr__ = dict.__delitem__
 
 @click.group()
-@click.option("--config", required=True)
-@click.option("--data-folder", default="./data/", help="Folder containing data and MC files")
+@click.option("-c", "--config", required=True)
+@click.option("-d", "--data-folder", default="./data/", help="Folder containing data and MC files")
 @click.option("--checkpoint-folder", default="./trained_models/", help="Folder to save checkpoints")
 @click.option("-n", "--n-events", default=-1, type=int, help="Number of events to load")
 @click.option("--job-idx", default=-1, type=int, help="Split generation among different jobs")
