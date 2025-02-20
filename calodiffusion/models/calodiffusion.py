@@ -58,7 +58,7 @@ class CaloDiffusion(Diffusion):
                 time_embed=(self.config.get("TIME_EMBED", "sin") == "sin"),
             )
 
-        return model
+        return model.to(self.device)
 
     def noise_generation(self, shape):
         return super().noise_generation(shape)
