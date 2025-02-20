@@ -2,6 +2,7 @@ from abc import abstractmethod, ABC
 import copy
 import math
 import numpy as np
+import os
 import matplotlib.pyplot as plt
 from matplotlib import gridspec
 import matplotlib.ticker as mtick
@@ -20,7 +21,7 @@ class Plot(ABC):
         self.flags = flags
         self.config = config
 
-        self.plt_exts = ["png", "pdf"]
+        self.plt_exts = flags.plot_extensions
 
 
         self.line_style = {
@@ -46,8 +47,11 @@ class Plot(ABC):
 
 
     def save_names(self, plot_name) -> list[str]: 
+        plot_dir = os.path.join(self.flags.plot_folder, self.config['CHECKPOINT_NAME'])
+        os.makedirs(plot_dir, exist_ok=True)
+
         return [
-            f"{self.flags.plot_folder}/{plot_name}_{self.config['CHECKPOINT_NAME']}_{self.flags.model}.{extension}"
+            os.path.join(plot_dir, f"{plot_name}_{utils.name_translate(self.flags.generated)}.{extension}")
             for extension 
             in self.plt_exts
         ]
