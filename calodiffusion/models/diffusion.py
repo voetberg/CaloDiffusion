@@ -144,7 +144,7 @@ class Diffusion(torch.nn.Module, ABC):
             if debug:
                 data.append(d_batch)
 
-            energies.append(E)
+            energies.append(E.cpu())
 
             if "layer" in self.config["SHOWERMAP"]:
                 layers.append(layers_)
@@ -177,7 +177,7 @@ class Diffusion(torch.nn.Module, ABC):
             showerMap=self.config["SHOWERMAP"],
             dataset_num=self.config.get("DATASET_NUM", 2),
             orig_shape=orig_shape,
-            ecut=self.config["ECUT"],
+            ecut=float(self.config["ECUT"]),
         )
 
         return generated, energies

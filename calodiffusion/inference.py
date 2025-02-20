@@ -17,8 +17,8 @@ class dotdict(dict):
     __delattr__ = dict.__delitem__
 
 @click.group()
-@click.option("--config", required=True)
-@click.option("--data-folder", default="./data/", help="Folder containing data and MC files")
+@click.option("-c", "--config", required=True)
+@click.option("-d", "--data-folder", default="./data/", help="Folder containing data and MC files")
 @click.option("--checkpoint-folder", default="./trained_models/", help="Folder to save checkpoints")
 @click.option("-n", "--n-events", default=-1, type=int, help="Number of events to load")
 @click.option("--job-idx", default=-1, type=int, help="Split generation among different jobs")
@@ -66,12 +66,17 @@ def diffusion(ctx):
 @click.option("-g", "--generated", help="Generated showers", required=True)
 @click.option("--plot-label", default="", help="Labels for the plot")
 @click.option("--plot-folder", default="./plots", help="Folder to save results")
+@click.option("-e", "--extension", help="Types of files to save under.", multiple=True, default=["png"])
 @click.pass_context
-def plot(ctx, generated, plot_label):
+def plot(ctx, generated, plot_label, plot_folder, extension):
     ctx.obj.plot_label = plot_label
+    ctx.obj.plot_folder = plot_folder
+    ctx.obj.generated = generated
+    ctx.obj.plot_extensions = extension
 
     flags = ctx.obj
-    evt_start = flags.job_idx * flags.nevts
+    
+    evt_start = flags.job_idx * flags.nevts if flags.job_idx >=0 else 0
     dataset_num = ctx.obj.config.get("DATASET_NUM", 2)
 
     bins = utils.XMLHandler(ctx.obj.config["PART_TYPE"], ctx.obj.config["BIN_FILE"])
@@ -97,10 +102,10 @@ def plot(ctx, generated, plot_label):
 
     data_dict = {
         "Geant4": np.reshape(data, ctx.obj.config["SHAPE"]),
-        utils.name_translate.get(flags.model, flags.model): generated,
+        utils.name_translate(generated_file_path=ctx.obj.generated): generated,
     }
 
-    plot_results(flags, ctx.config, data_dict, energies)
+    plot_results(flags, ctx.obj.config, data_dict, energies)
 
 
 def model_forward(flags, config, data_loader, model, sample_steps):
@@ -131,8 +136,8 @@ def model_forward(flags, config, data_loader, model, sample_steps):
         if flags.debug: 
             data.append(d_batch)
 
-        energies.append(E)
-        generated.append(batch_generated)
+        energies.append(E.cpu())
+        generated.append(batch_generated.cpu())
 
         if "layer" in config["SHOWERMAP"]:
             layers.append(layers_)

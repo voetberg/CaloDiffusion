@@ -152,10 +152,8 @@ def split_data(data, nevts, frac=0.8):
     return train_data, test_data
 
 
-name_translate = {
-    "Diffu": "CaloDiffusion",
-    "Avg": "Avg Shower",
-}
+def name_translate(generated_file_path:str): 
+    return generated_file_path.split('/')[-2].split('_')[-1]
 
 
 def _separation_power(hist1, hist2, bins):
