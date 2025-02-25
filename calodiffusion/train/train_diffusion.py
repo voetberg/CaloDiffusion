@@ -6,6 +6,9 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import torch
 
 from calodiffusion.utils import utils
+import torch
+
+from calodiffusion.utils import utils
 from calodiffusion.train.train import Train
 from calodiffusion.models.calodiffusion import CaloDiffusion
 

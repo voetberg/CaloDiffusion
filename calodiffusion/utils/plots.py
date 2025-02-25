@@ -2,6 +2,7 @@ from abc import abstractmethod, ABC
 import copy
 import math
 import numpy as np
+import os
 import matplotlib.pyplot as plt
 from matplotlib import gridspec
 import matplotlib.ticker as mtick
@@ -20,7 +21,7 @@ class Plot(ABC):
         self.flags = flags
         self.config = config
 
-        self.plt_exts = ["png", "pdf"]
+        self.plt_exts = flags.plot_extensions
 
 
         self.line_style = {
@@ -46,8 +47,11 @@ class Plot(ABC):
 
 
     def save_names(self, plot_name) -> list[str]: 
+        plot_dir = os.path.join(self.flags.plot_folder, self.config['CHECKPOINT_NAME'])
+        os.makedirs(plot_dir, exist_ok=True)
+
         return [
-            f"{self.flags.plot_folder}/{plot_name}_{self.config['CHECKPOINT_NAME']}_{self.flags.model}.{extension}"
+            os.path.join(plot_dir, f"{plot_name}_{utils.name_translate(self.flags.generated)}.{extension}")
             for extension 
             in self.plt_exts
         ]
@@ -149,8 +153,8 @@ class Plot(ABC):
                         feed_dict[plot],
                         bins=binning,
                         label=plot,
-                        linestyle=self.line_style[plot],
-                        color=self.colors[plot],
+                        linestyle=self.line_style.get(plot, "-"),
+                        color=self.colors.get(plot, "blue"),
                         density=True,
                         histtype="step",
                         lw=4,
@@ -166,18 +170,18 @@ class Plot(ABC):
                         ax1.plot(
                             xaxis,
                             h_ratio,
-                            color=self.colors[plot],
-                            marker=self.line_style[plot],
+                            color=self.colors.get(plot, "blue"),
+                            marker=self.line_style.get(plot, "-"),
                             ms=10,
                             lw=0,
                             markeredgewidth=4,
                         )
                     else:
                         if len(binning) > 20:  # draw ratio as line
-                            ax1.plot(xaxis, h_ratio, color=self.colors[plot], linestyle="-", lw=4)
+                            ax1.plot(xaxis, h_ratio, color=self.colors.get(plot, "blue"), linestyle="-", lw=4)
                         else:  # draw as markers
                             ax1.plot(
-                                xaxis, h_ratio, color=self.colors[plot], marker="o", ms=10, lw=0
+                                xaxis, h_ratio, color=self.colors.get(plot, "blue"), marker="o", ms=10, lw=0
                             )
                     sep_power = self._separation_power(dist, reference_hist, binning)
                     print("Separation power for hist '%s' is %.4f" % (xlabel, sep_power))
@@ -214,9 +218,8 @@ class Plot(ABC):
         reference_name="Geant4",
         no_mean=False,
     ):
-        assert (
-            reference_name in feed_dict.keys()
-        ), "ERROR: Don't know the reference distribution"
+        if reference_name not in feed_dict.keys(): 
+            raise NotImplementedError("Reference distribution %s not included, choice from %s", (reference_name, feed_dict.keys()))
 
         fig, gs = self.SetGrid()
         ax0 = plt.subplot(gs[0])
@@ -231,9 +234,9 @@ class Plot(ABC):
                 d = np.mean(feed_dict[plot], 0)
                 ref = np.mean(feed_dict[reference_name], 0)
             if "steps" in plot or "r=" in plot:
-                ax0.plot(d, label=plot, marker=self.line_style[plot], color=self.colors[plot], lw=0)
+                ax0.plot(d, label=plot, marker=self.line_style.get(plot, "-"), color=self.colors.get(plot, "blue"), lw=0)
             else:
-                ax0.plot(d, label=plot, linestyle=self.line_style[plot], color=self.colors[plot])
+                ax0.plot(d, label=plot, linestyle=self.line_style.get(plot, "-"), color=self.colors.get(plot, "blue"))
             if len(self.flags.plot_label) > 0:
                 ax0.set_title(self.flags.plot_label, fontsize=20, loc="right", style="italic")
             if reference_name != plot:
@@ -251,13 +254,13 @@ class Plot(ABC):
                 if "steps" in plot or "r=" in plot:
                     ax1.plot(
                         ratio,
-                        color=self.colors[plot],
+                        color=self.colors.get(plot, "blue"),
                         markeredgewidth=4,
-                        marker=self.line_style[plot],
+                        marker=self.line_style.get(plot, "-"),
                         lw=0,
                     )
                 else:
-                    ax1.plot(ratio, color=self.colors[plot], linestyle=self.line_style[plot])
+                    ax1.plot(ratio, color=self.colors.get(plot, "blue"), linestyle=self.line_style.get(plot, "-"))
 
         self.FormatFig(xlabel="", ylabel=ylabel, ax0=ax0)
         ax0.legend(loc="best", fontsize=24, ncol=1)

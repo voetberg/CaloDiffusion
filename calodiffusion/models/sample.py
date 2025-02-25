@@ -991,7 +991,9 @@ class Consistency(Sample):
         ]
 
         if num_steps > 1:
-            t_steps = torch.tensor([t_all_steps[i] for i in sample_idxs[:num_steps]])
+            t_steps = torch.tensor(
+                [t_all_steps[i] for i in sample_idxs[:num_steps]]
+            )
         else:
             t_steps = torch.tensor([t_all_steps[0]])
         sigmas = torch.cat(

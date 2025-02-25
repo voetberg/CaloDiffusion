@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+import json
 import os
 
 import numpy as np
@@ -18,6 +19,18 @@ class Train(ABC):
         
         self.config = config
         self.flags = flags
+
+        self.checkpoint_folder = f"{flags.checkpoint_folder.strip('/')}/{config['CHECKPOINT_NAME']}_{self.__class__.__name__.removeprefix('Train')}/"
+        
+        if hasattr(flags, "model_loc"): 
+            if flags.model_loc is not None: 
+                self.checkpoint_folder = os.path.dirname(flags.model_loc) + "/"
+        
+        if not os.path.exists(self.checkpoint_folder):
+            os.makedirs(self.checkpoint_folder)
+
+        with open(os.path.join(self.checkpoint_folder, "config.json"), "w") as config_file:
+            json.dump(flags.config, config_file) 
 
         if self.save_model: 
             self.checkpoint_folder = f"{flags.checkpoint_folder.strip('/')}/{config['CHECKPOINT_NAME']}_{flags.model}/"
@@ -54,13 +67,17 @@ class Train(ABC):
         n_epochs,
         restart_training,
     ):
-        checkpoint_path = os.path.join(self.checkpoint_folder, "checkpoint.pth")
+        
+        if not hasattr(self.flags, "model_loc"):
+            checkpoint_path = os.path.join(self.checkpoint_folder, "checkpoint.pth")
 
-        if os.path.exists(checkpoint_path):
-            print("Loading training checkpoint from %s" % checkpoint_path, flush=True)
-            checkpoint = torch.load(checkpoint_path, map_location=self.device)
-        else:
-            raise ValueError("No checkpoint at %s" % checkpoint_path)
+            if os.path.exists(checkpoint_path):
+                print("Loading training checkpoint from %s" % checkpoint_path, flush=True)
+                checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+            else:
+                raise ValueError("No checkpoint at %s" % checkpoint_path)
+        else: 
+            checkpoint = torch.load(self.flags.model_loc, map_location=self.device, weights_only=False)
 
         if "model_state_dict" in checkpoint.keys():
             model.load_state_dict(checkpoint["model_state_dict"])
@@ -161,17 +178,18 @@ class Train(ABC):
             num_epochs, 
             training_losses, 
             val_losses
-        )    
-        # Also save at the end of training
-        self.save(
-            model.state_dict(),
-            epoch=epoch,
-            name="final",
-            training_losses=training_losses,
-            validation_losses=val_losses,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            early_stopper=early_stopper,
         )
+        if self.save_model: 
+            # Also save at the end of training
+            self.save(
+                model.state_dict(),
+                epoch=epoch,
+                name="final",
+                training_losses=training_losses,
+                validation_losses=val_losses,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                early_stopper=early_stopper,
+            )
         
         return model, training_losses, val_losses

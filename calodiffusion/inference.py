@@ -1,5 +1,5 @@
-import argparse
 import os
+import click 
 
 import numpy as np
 import h5py
@@ -8,86 +8,104 @@ from calodiffusion.utils import utils
 import calodiffusion.utils.plots as plots
 from calodiffusion.utils.utils import LoadJson
 
-from calodiffusion.train import Diffusion
-models = {model.__name__: model for model in [Diffusion]}
+from calodiffusion.train import Diffusion, TrainLayerModel
 
+class dotdict(dict):
+    """dot.notation access to dictionary attributes"""
+    __getattr__ = dict.get
+    __setattr__ = dict.__setitem__
+    __delattr__ = dict.__delitem__
 
-def inference_parser():
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument(
-        "-d", "--data-folder", default="./data/", help="Folder containing data and MC files"
-    )
-    parser.add_argument(
-        "--plot-folder", default="./plots", help="Folder to save results"
-    )
-    parser.add_argument(
-        "--plot", action='store_true', help='generate plot at the same time as running inference.'
-    )
-    parser.add_argument(
-        "--model-folder", dest='checkpoint_folder', default="../models/", help="Folder containing trained model"
-    )
-    parser.add_argument("--generated", "-g", default=None, help="Generated showers")
-    parser.add_argument("--model-loc", default="test", help="Location of model")
-    parser.add_argument(
-        "--config", "-c", default="config_dataset2.json", help="Training parameters"
-    )
-    parser.add_argument(
-        "-n", "--nevts", type=int, default=-1, help="Number of events to load"
-    )
-    parser.add_argument(
-        "--batch-size", type=int, default=100, help="Batch size for generation"
-    )
-    parser.add_argument(
-        "--model",
-        default="Diffusion",
-        help="Diffusion model to load.",
-        choices=models.keys()
-    )
-    parser.add_argument("--plot-label", default="", help="Add to plot")
-
-    parser.add_argument(
-        "--sample", action="store_true", default=False, help="Sample from learned model"
-    )
-    parser.add_argument(
-        "--sample-steps",
-        default=None,
-        type=int,
-        help="How many steps for sampling (override config)",
-    )
-    parser.add_argument(
-        "--sample-offset",
-        default=0,
-        type=int,
-        help="Skip some iterations in the sampling (noisiest iters most unstable)",
-    )
+@click.group()
+@click.option("-c", "--config", required=True)
+@click.option("-d", "--data-folder", default="./data/", help="Folder containing data and MC files")
+@click.option("--checkpoint-folder", default="./trained_models/", help="Folder to save checkpoints")
+@click.option("-n", "--n-events", default=-1, type=int, help="Number of events to load")
+@click.option("--job-idx", default=-1, type=int, help="Split generation among different jobs")
+@click.option("--layer-only/--no-layer", default=False, help="Only sample layer energies")
+@click.option("--debug/--no-debug", default=False, help="Debugging options")
+@click.pass_context
+def inference_parser(ctx, debug, config, data_folder, checkpoint_folder, layer_only, job_idx, n_events): 
+    ctx.ensure_object(dotdict)
     
-    parser.add_argument("--frac", help=argparse.SUPPRESS, default=0.75)
+    ctx.obj.config = LoadJson(config)
+    ctx.obj.checkpoint_folder = checkpoint_folder
+    ctx.obj.data_folder = data_folder
+    ctx.obj.debug = debug
+    ctx.obj.job_idx = job_idx
+    ctx.obj.nevts = n_events 
+    ctx.obj.layer_only = layer_only
 
-    parser.add_argument(
-        "--layer-only",
-        default=False,
-        action="store_true",
-        help="Only sample layer energies",
-    )
 
-    parser.add_argument(
-        "--job-idx", default=-1, type=int, help="Split generation among different jobs"
-    )
-    parser.add_argument(
-        "--debug", action="store_true", default=False, help="Debugging options"
-    )
-    parser.add_argument(
-        "--from-end",
-        action="store_true",
-        default=False,
-        help="Use events from end of file (usually holdout set)",
-    )
+@inference_parser.group()
+@click.option("--sample-steps", default=400, type=int, help="How many steps for sampling (override config)")
+@click.option("--sample-offset", default=0, type=int, help="Skip some iterations in the sampling (noisiest iters most unstable)")
+@click.option("--sample-algo", default="ddpm", help="What sampling algorithm (ddpm, ddim, cold, cold2)")
+@click.option("--model-loc", default=None, help="Specific folder for loading existing model", required=True)
+@click.pass_context
+def sample(ctx, sample_steps, sample_algo, sample_offset, model_loc):
+    ctx.obj.model_loc = model_loc
+    ctx.obj.sample_steps = sample_steps
+    ctx.obj.sample_algo = sample_algo 
+    ctx.obj.sample_offset = sample_offset
 
-    flags = parser.parse_args()
-    config = LoadJson(flags.config)
-    config['flags'] = flags  # Access shortcut
-    return flags, config
+@sample.command()
+@click.option("--layer-model", required=True)
+@click.pass_context
+def layer(ctx, layer_model): 
+    ctx.obj.config['layer_model'] = layer_model
+    inference(ctx.obj, ctx.obj.config, model=TrainLayerModel)
+
+@sample.command()
+@click.pass_context
+def diffusion(ctx):
+    inference(ctx.obj, ctx.obj.config, model=Diffusion)
+
+
+@inference_parser.command()
+@click.option("-g", "--generated", help="Generated showers", required=True)
+@click.option("--plot-label", default="", help="Labels for the plot")
+@click.option("--plot-folder", default="./plots", help="Folder to save results")
+@click.option("-e", "--extension", help="Types of files to save under.", multiple=True, default=["png"])
+@click.pass_context
+def plot(ctx, generated, plot_label, plot_folder, extension):
+    ctx.obj.plot_label = plot_label
+    ctx.obj.plot_folder = plot_folder
+    ctx.obj.generated = generated
+    ctx.obj.plot_extensions = extension
+
+    flags = ctx.obj
+    
+    evt_start = flags.job_idx * flags.nevts if flags.job_idx >=0 else 0
+    dataset_num = ctx.obj.config.get("DATASET_NUM", 2)
+
+    bins = utils.XMLHandler(ctx.obj.config["PART_TYPE"], ctx.obj.config["BIN_FILE"])
+    geom_conv = utils.GeomConverter(bins)
+
+    generated, energies = LoadSamples(flags, ctx.obj.config, geom_conv)
+
+    total_evts = energies.shape[0]
+
+    data = []
+    for dataset in ctx.obj.config["EVAL"]:
+        with h5py.File(os.path.join(flags.data_folder, dataset), "r") as h5f:
+            if flags.from_end:
+                start = -int(total_evts)
+                end = None
+            else:
+                start = evt_start
+                end = start + total_evts
+            show = h5f["showers"][start:end] / 1000.0
+            if dataset_num <= 1:
+                show = geom_conv.convert(geom_conv.reshape(show)).detach().numpy()
+            data.append(show)
+
+    data_dict = {
+        "Geant4": np.reshape(data, ctx.obj.config["SHAPE"]),
+        utils.name_translate(generated_file_path=ctx.obj.generated): generated,
+    }
+
+    plot_results(flags, ctx.obj.config, data_dict, energies)
 
 
 def model_forward(flags, config, data_loader, model, sample_steps):
@@ -110,16 +128,16 @@ def model_forward(flags, config, data_loader, model, sample_steps):
             layers=layers_,
             num_steps=sample_steps,
             cold_noise_scale=config.get("COLD_NOISE", 1.0),
+            sample_algo=flags.sample_algo,
             debug=flags.debug,
             sample_offset=flags.sample_offset,
         )
 
-
         if flags.debug: 
             data.append(d_batch)
 
-        energies.append(E)
-        generated.append(batch_generated)
+        energies.append(E.cpu())
+        generated.append(batch_generated.cpu())
 
         if "layer" in config["SHOWERMAP"]:
             layers.append(layers_)
@@ -212,7 +230,7 @@ def LoadSamples(flags, config, geom_conv):
     return generated, energies
 
 
-def plot(flags, config, data_dict, energies): 
+def plot_results(flags, config, data_dict, energies): 
     plot_routines = {
         "Energy per layer": plots.ELayer(flags, config),
         "Energy": plots.HistEtot(flags, config),
@@ -239,11 +257,11 @@ def plot(flags, config, data_dict, energies):
         plotting_method(data_dict, energies)
 
 
-def inference(flags, config):
+def inference(flags, config, model):
     data_loader = utils.load_data(flags, config, eval=True)
     dataset_num = config.get("DATASET_NUM", 2)
 
-    model_instance = models[flags.model](flags, config, load_data=False)
+    model_instance = model(flags, config, load_data=False)
     model_instance.init_model()
     model, _, _, _, _, _  = model_instance.pickup_checkpoint(
         model=model_instance.model,
@@ -272,7 +290,7 @@ def inference(flags, config):
 
         generated = generated * (np.reshape(mask, (1, -1)) == 0)
 
-    fout = f"{model_instance.checkpoint_folder.rstrip('/')}/generated_{config['CHECKPOINT_NAME']}_{config.get('SAMPLER', '').lower()}{sample_steps}.h5"
+    fout = f"{model_instance.checkpoint_folder}/generated_{config['CHECKPOINT_NAME']}_{flags.sample_algo}{sample_steps}.h5"
 
     print("Creating " + fout)
     with h5py.File(fout, "w") as h5f:
@@ -288,40 +306,4 @@ def inference(flags, config):
 
 
 if __name__ == "__main__":
-    flags, config = inference_parser()
-
-    evt_start = flags.job_idx * flags.nevts
-    dataset_num = config.get("DATASET_NUM", 2)
-
-    bins = utils.XMLHandler(config["PART_TYPE"], config["BIN_FILE"])
-    geom_conv = utils.GeomConverter(bins)
-
-    if flags.sample: 
-        generated, energies = inference(flags, config)
-
-    else: 
-        generated, energies = LoadSamples(flags, config, geom_conv)
-
-    if flags.plot or (flags.generated is not None): 
-        total_evts = energies.shape[0]
-
-        data = []
-        for dataset in config["EVAL"]:
-            with h5py.File(os.path.join(flags.data_folder, dataset), "r") as h5f:
-                if flags.from_end:
-                    start = -int(total_evts)
-                    end = None
-                else:
-                    start = evt_start
-                    end = start + total_evts
-                show = h5f["showers"][start:end] / 1000.0
-                if dataset_num <= 1:
-                    show = geom_conv.convert(geom_conv.reshape(show)).detach().numpy()
-                data.append(show)
-
-        data_dict = {
-            "Geant4": np.reshape(data, config["SHAPE"]),
-            utils.name_translate.get(flags.model, flags.model): generated,
-        }
-
-        plot(flags, config, data_dict, energies)
+    inference_parser()

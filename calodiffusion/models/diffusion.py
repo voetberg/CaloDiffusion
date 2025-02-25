@@ -13,7 +13,6 @@ import torch
 
 from calodiffusion.utils import utils
 from calodiffusion.utils import plots as plot
-from calodiffusion.models import sample, loss
 
 
 class Diffusion(torch.nn.Module, ABC):
@@ -28,22 +27,10 @@ class Diffusion(torch.nn.Module, ABC):
         self.loss_type = loss_type
 
         loss_algo = self.config.get('TRAINING_OBJ', "noise_pred")
-        try: 
-            self.loss_function = getattr(
-                loss, loss_algo
-            )(self.config, self.nsteps, self.loss_type)
-
-        except AttributeError: 
-            raise ValueError("Loss '%s' is not supported" % loss_algo)
+        self.loss_function = utils.load_attr("loss", loss_algo)(self.config, self.nsteps, self.loss_type)
 
         sampler_algo = self.config.get("SAMPLER", "DDim")
-        try: 
-            self.sampler_algorithm = getattr(
-                sample, sampler_algo
-            )(self.config)
-            
-        except AttributeError as e:
-            raise ValueError(f"Sampler '%s' is not supported: {e}" % sampler_algo)
+        self.sampler_algorithm = utils.load_attr("sampler", sampler_algo)(self.config, sampler_algo.lower())
 
         self.model = self.init_model()
         self.NN_embed = self.init_embedding_model()
@@ -125,7 +112,6 @@ class Diffusion(torch.nn.Module, ABC):
     ):
         return super().load_state_dict(state_dict, strict)
 
-
     def generate(
         self,
         data_loader: utils.DataLoader,
@@ -158,7 +144,7 @@ class Diffusion(torch.nn.Module, ABC):
             if debug:
                 data.append(d_batch)
 
-            energies.append(E)
+            energies.append(E.cpu())
 
             if "layer" in self.config["SHOWERMAP"]:
                 layers.append(layers_)
@@ -191,7 +177,7 @@ class Diffusion(torch.nn.Module, ABC):
             showerMap=self.config["SHOWERMAP"],
             dataset_num=self.config.get("DATASET_NUM", 2),
             orig_shape=orig_shape,
-            ecut=self.config["ECUT"],
+            ecut=float(self.config["ECUT"]),
         )
 
         return generated, energies

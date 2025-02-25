@@ -51,27 +51,25 @@ class CaloDiffusion(Diffusion):
                 mid_attn= self.config.get("MID_ATTN", False),
                 cylindrical=self.config.get("CYLINDRICAL", False),
                 compress_Z=self.config.get("COMPRESS_Z", False),
-                resnet_block_groups=self.config.get("BLOCK_GROUPS", 8), 
                 data_shape=calo_summary_shape,
                 cond_embed=(self.config.get("COND_EMBED", "sin") == "sin"),
                 cond_size=cond_size,
                 time_embed=(self.config.get("TIME_EMBED", "sin") == "sin"),
             )
 
-        return model
+        return model.to(self.device)
 
     def noise_generation(self, shape):
         return super().noise_generation(shape)
 
     def forward(self, x, E, time, layers, controls=None):
-
-        if self.NN_embed is not None:
-            x = self.NN_embed.enc(x.float()).to(x.device)
-        if self.layer_cond and layers is not None:
+        if (self.NN_embed is not None):
+            x = self.NN_embed.enc(x).to(x.device)
+        if (self.layer_cond) and (layers is not None):
             E = torch.cat([E, layers], dim=1)
 
-        rz_phi = self.add_RZPhi(x).float()
-        out = self.model(rz_phi, cond=E.float(), time=time.float(), controls=controls)
+        rz_phi = self.add_RZPhi(x)
+        out = self.model(rz_phi, cond=E.to(torch.float32), time=time.to(torch.float32), controls=controls)
 
         if self.NN_embed is not None:
             out = self.NN_embed.dec(out).to(x.device)
@@ -128,18 +126,33 @@ class CaloDiffusion(Diffusion):
     
     def denoise(self, x, time=None, E=None, sigma=None, noise=None, layers = None):
         t_emb = self.do_time_embed(sigma = sigma.reshape(-1))
-        if 'minsnr' in type(self.loss_function).__name__:
-            c_skip, c_out, c_in = self.loss_function.get_scaling(x, sigma)
+        loss_function_name = type(self.loss_function).__name__
+        if('minsnr' in loss_function_name):
+            c_skip, c_out, c_in = self.get_scalings(sigma)
             c_in = c_in.T
-            
+
         else:
             sigma = sigma.reshape(-1, *(1,)*(len(x.shape)-1))
             c_in = 1 / (sigma**2 + 1).sqrt()
             sigma2 = sigma**2
             c_skip = 1. / (sigma2 + 1.)
             c_out = torch.sqrt(sigma2) / (sigma2 + 1.).sqrt()
-        pred = self.forward(x * c_in, E=E, time=t_emb, layers = layers)
-        return self.loss_function.apply_scaling_skips(pred, x,  c_in, c_skip, c_out, sigma)
+
+        if layers is not None: 
+            layers = layers.to(torch.float32)
+
+        pred = self.forward(x.to(torch.float32) * c_in, E.to(torch.float32), t_emb.to(torch.float32), layers = layers)
+
+        if('noise_pred' in loss_function_name):
+            return (x - sigma * pred)
+
+        elif('mean_pred' in loss_function_name):
+            return pred
+        elif ('hybrid' or 'minsnr') in loss_function_name:
+            return (c_skip * x + c_out * pred)
+        else:
+            raise ValueError("??? Training obj %s" % loss_function_name)
+
 
     def __call__(self, x, **kwargs):
         return self.denoise(x, **kwargs)

@@ -19,7 +19,6 @@ class Loss(ABC):
         if "log" in config.get("NOISE_SCHED", "linear"):
             self.discrete_time = False
 
-            # TODO Pull from config
             self.P_mean = -1.2
             self.P_std = 1.2
             self.sigma_data = 0.5

@@ -1,4 +1,5 @@
 import os
+from typing import Literal
 import h5py as h5
 import numpy as np
 import torch
@@ -151,10 +152,8 @@ def split_data(data, nevts, frac=0.8):
     return train_data, test_data
 
 
-name_translate = {
-    "Diffu": "CaloDiffusion",
-    "Avg": "Avg Shower",
-}
+def name_translate(generated_file_path:str): 
+    return generated_file_path.split('/')[-2].split('_')[-1]
 
 
 def _separation_power(hist1, hist2, bins):
@@ -904,3 +903,20 @@ def subsample_alphas(alpha, time, x_shape):
     batch_size = time.shape[0]
     out = alpha.gather(-1, time.cpu())
     return out.reshape(batch_size, *((1,) * (len(x_shape) - 1))).to(time.device)
+
+
+def load_attr(type_: Literal["sampler", "loss"], algo_name: str): 
+    if type_ == "sampler": 
+        from calodiffusion.models import sample as module
+    else: 
+        from calodiffusion.models import loss as module
+
+    try: 
+        algo = getattr(
+            module, algo_name
+        )
+        
+    except AttributeError as e: 
+        raise ValueError("%s '%s' is not supported: %s" % (type_, algo_name, e))
+    
+    return algo
