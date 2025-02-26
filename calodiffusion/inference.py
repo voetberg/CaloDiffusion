@@ -1,3 +1,4 @@
+from datetime import datetime
 import os
 import click 
 
@@ -24,8 +25,9 @@ class dotdict(dict):
 @click.option("--job-idx", default=-1, type=int, help="Split generation among different jobs")
 @click.option("--layer-only/--no-layer", default=False, help="Only sample layer energies")
 @click.option("--debug/--no-debug", default=False, help="Debugging options")
+@click.option("--seed", default=None, help='Set a manual seed (saved in config)')
 @click.pass_context
-def inference_parser(ctx, debug, config, data_folder, checkpoint_folder, layer_only, job_idx, n_events): 
+def inference_parser(ctx, debug, config, data_folder, checkpoint_folder, layer_only, job_idx, n_events, seed): 
     ctx.ensure_object(dotdict)
     
     ctx.obj.config = LoadJson(config)
@@ -36,14 +38,25 @@ def inference_parser(ctx, debug, config, data_folder, checkpoint_folder, layer_o
     ctx.obj.nevts = n_events 
     ctx.obj.layer_only = layer_only
 
+    if seed is None: 
+        seed = int(np.random.default_rng().integers(low=100, high=10**5))
+
+    ctx.obj.seed = seed
+    ctx.obj.config['SEED'] = seed
 
 @inference_parser.group()
 @click.option("--sample-steps", default=400, type=int, help="How many steps for sampling (override config)")
 @click.option("--sample-offset", default=0, type=int, help="Skip some iterations in the sampling (noisiest iters most unstable)")
-@click.option("--sample-algo", default="ddpm", help="What sampling algorithm (ddpm, ddim, cold, cold2)")
-@click.option("--model-loc", default=None, help="Specific folder for loading existing model", required=True)
+@click.option("--sample-algo", default="DDim", help="Algorithm for sampling the model output")
+@click.option("--train-sampler/--no-train-sampler", default=None, help="For samplers requiring pre-training, train them (overwrites config)")
+@click.option("--model-loc", default=None, help="Specific folder for loading existing model")
 @click.pass_context
-def sample(ctx, sample_steps, sample_algo, sample_offset, model_loc):
+def sample(ctx, sample_steps, sample_algo, sample_offset, train_sampler, model_loc):
+    ctx.obj.config['SAMPLER'] = sample_algo
+    if "SAMPLER_OPTIONS" not in ctx.obj.config.keys(): 
+        ctx.obj.config['SAMPLER_OPTIONS'] = {}
+    if train_sampler is not None: 
+        ctx.obj.config['SAMPLER_OPTIONS']["TRAIN_SAMPLER"] =  train_sampler
     ctx.obj.model_loc = model_loc
     ctx.obj.sample_steps = sample_steps
     ctx.obj.sample_algo = sample_algo 
@@ -59,6 +72,8 @@ def layer(ctx, layer_model):
 @sample.command()
 @click.pass_context
 def diffusion(ctx):
+    non_config = dotdict({key: value for key, value in ctx.obj.items() if key!='config'})
+    ctx.obj.config['flags'] = non_config
     inference(ctx.obj, ctx.obj.config, model=Diffusion)
 
 
@@ -290,7 +305,7 @@ def inference(flags, config, model):
 
         generated = generated * (np.reshape(mask, (1, -1)) == 0)
 
-    fout = f"{model_instance.checkpoint_folder}/generated_{config['CHECKPOINT_NAME']}_{flags.sample_algo}{sample_steps}.h5"
+    fout = f"{model_instance.checkpoint_folder}/generated_{config['CHECKPOINT_NAME']}_{flags.sample_algo}{sample_steps}_{datetime.now().timestamp()}.h5"
 
     print("Creating " + fout)
     with h5py.File(fout, "w") as h5f:
