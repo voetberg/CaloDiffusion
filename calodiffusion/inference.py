@@ -62,6 +62,9 @@ def sample(ctx, sample_steps, sample_algo, sample_offset, train_sampler, model_l
     ctx.obj.sample_algo = sample_algo 
     ctx.obj.sample_offset = sample_offset
 
+    non_config = dotdict({key: value for key, value in ctx.obj.items() if key!='config'})
+    ctx.obj.config['flags'] = non_config
+
 @sample.command()
 @click.option("--layer-model", required=True)
 @click.pass_context
@@ -72,8 +75,6 @@ def layer(ctx, layer_model):
 @sample.command()
 @click.pass_context
 def diffusion(ctx):
-    non_config = dotdict({key: value for key, value in ctx.obj.items() if key!='config'})
-    ctx.obj.config['flags'] = non_config
     inference(ctx.obj, ctx.obj.config, model=Diffusion)
 
 
