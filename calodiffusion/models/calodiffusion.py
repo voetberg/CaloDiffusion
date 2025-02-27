@@ -148,9 +148,9 @@ class CaloDiffusion(Diffusion):
             c_out = torch.sqrt(sigma2) / (sigma2 + 1.).sqrt()
 
         if layers is not None: 
-            layers = layers.to(torch.float32)
+            layers = layers.to(torch.float32).to(self.device)
 
-        pred = self.forward(x.to(torch.float32) * c_in, E.to(torch.float32), t_emb.to(torch.float32), layers = layers)
+        pred = self.forward(x.to(torch.float32) * c_in, E.to(torch.float32).to(self.device), t_emb.to(torch.float32), layers = layers)
 
         if('noise_pred' in loss_function_name):
             return (x - sigma * pred)
