@@ -18,7 +18,7 @@ class dotdict(dict):
     __delattr__ = dict.__delitem__
 
 @click.group()
-@click.option("-c", "--config", required=True)
+@click.option("-c", "--config")
 @click.option("-d", "--data-folder", default="./data/", help="Folder containing data and MC files")
 @click.option("--checkpoint-folder", default="./trained_models/", help="Folder to save checkpoints")
 @click.option("-n", "--n-events", default=-1, type=int, help="Number of events to load")
@@ -30,7 +30,7 @@ class dotdict(dict):
 def inference_parser(ctx, debug, config, data_folder, checkpoint_folder, layer_only, job_idx, n_events, seed): 
     ctx.ensure_object(dotdict)
     
-    ctx.obj.config = LoadJson(config)
+    ctx.obj.config = LoadJson(config) if config is not None else {}
     ctx.obj.checkpoint_folder = checkpoint_folder
     ctx.obj.data_folder = data_folder
     ctx.obj.debug = debug
@@ -79,7 +79,7 @@ def diffusion(ctx):
 
 
 @inference_parser.command()
-@click.option("-g", "--generated", help="Generated showers", required=True)
+@click.option("-g", "--generated", help="Generated showers")
 @click.option("--plot-label", default="", help="Labels for the plot")
 @click.option("--plot-folder", default="./plots", help="Folder to save results")
 @click.option("-e", "--extension", help="Types of files to save under.", multiple=True, default=["png"])
@@ -122,116 +122,6 @@ def plot(ctx, generated, plot_label, plot_folder, extension):
     }
 
     plot_results(flags, ctx.obj.config, data_dict, energies)
-
-
-def model_forward(flags, config, data_loader, model, sample_steps):
-    device = utils.get_device()
-    tqdm = utils.import_tqdm()
-
-    shower_embed = config.get("SHOWER_EMBED", "")
-    orig_shape = "orig" in shower_embed
-
-    generated = []
-    data = []
-    energies = []
-    layers = []
-    for E, layers_, d_batch in tqdm(data_loader):
-        E = E.to(device=device)
-        d_batch = d_batch.to(device=device)
-
-        batch_generated = model.Sample(
-            E,
-            layers=layers_,
-            num_steps=sample_steps,
-            cold_noise_scale=config.get("COLD_NOISE", 1.0),
-            sample_algo=flags.sample_algo,
-            debug=flags.debug,
-            sample_offset=flags.sample_offset,
-        )
-
-        if flags.debug: 
-            data.append(d_batch)
-
-        energies.append(E.cpu())
-        generated.append(batch_generated.cpu())
-
-        if "layer" in config["SHOWERMAP"]:
-            layers.append(layers_)
-
-        # Plot the histograms of normalized voxels for both the diffusion model and Geant4
-        if flags.debug:
-            gen, all_gen, x0s = batch_generated
-            for j in [
-                0,
-                len(all_gen) // 4,
-                len(all_gen) // 2,
-                3 * len(all_gen) // 4,
-                9 * len(all_gen) // 10,
-                len(all_gen) - 10,
-                len(all_gen) - 5,
-                len(all_gen) - 1,
-            ]:
-                fout_ex = "{}/{}_{}_norm_voxels_gen_step{}.{}".format(
-                    flags.plot_folder,
-                    config["CHECKPOINT_NAME"],
-                    flags.model,
-                    j,
-                    ".png",
-                )
-                plots.Plot(flags, config)._histogram(
-                    [all_gen[j].cpu().reshape(-1), np.concatenate(data).reshape(-1)],
-                    ["Diffu", "Geant4"],
-                    ["blue", "black"],
-                    xaxis_label="Normalized Voxel Energy",
-                    num_bins=40,
-                    normalize=True,
-                    fname=fout_ex,
-                )
-
-                fout_ex = "{}/{}_{}_norm_voxels_x0_step{}.{}".format(
-                    flags.plot_folder,
-                    config["CHECKPOINT_NAME"],
-                    flags.model,
-                    j,
-                    ".png",
-                )
-                plot.Plot(flags, config)._histogram(
-                    [x0s[j].cpu().reshape(-1), np.concatenate(data).reshape(-1)],
-                    ["Diffu", "Geant4"],
-                    ["blue", "black"],
-                    xaxis_label="Normalized Voxel Energy",
-                    num_bins=40,
-                    normalize=True,
-                    fname=fout_ex,
-                )
-
-            generated.append(gen)
-
-    generated = np.concatenate(generated)
-    energies = np.concatenate(energies)
-    layers = np.concatenate(layers)
-
-    if not orig_shape:
-        generated = generated.reshape(config["SHAPE"])
-
-    generated, energies = utils.ReverseNorm(
-        generated,
-        energies,
-        layerE=layers,
-        shape=config["SHAPE"],
-        logE=config["logE"],
-        binning_file=config["BIN_FILE"],
-        max_deposit=config["MAXDEP"],
-        emax=config["EMAX"],
-        emin=config["EMIN"],
-        showerMap=config["SHOWERMAP"],
-        dataset_num=config.get("DATASET_NUM", 2),
-        orig_shape=orig_shape,
-        ecut=config["ECUT"],
-    )
-
-    return generated, energies
-
 
 def LoadSamples(flags, config, geom_conv):
     end = None if flags.nevts < 0 else flags.nevts
@@ -289,7 +179,6 @@ def inference(flags, config, model):
     )
     sample_steps = flags.sample_steps if flags.sample_steps is not None else config.get("SAMPLE_STEPS", 400)
 
-    # generated, energies = model_forward(flags, config, data_loader, model=model, sample_steps=sample_steps)
     generated, energies = model.generate(data_loader, sample_steps, flags.debug, flags.sample_offset)
     if dataset_num > 1:
         # mask for voxels that are always empty
