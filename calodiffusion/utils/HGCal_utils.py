@@ -648,7 +648,7 @@ class HGCalConverter(torch.nn.Module):
             trainable=self.trainable,
         )
 
-        self.nets = nn.ModuleList([self.embeder, self.decoder])
+        self.nets = torch.nn.ModuleList([self.embeder, self.decoder])
 
     # proper initialization of embedding
     def init(self, noise_scale=0.0, norm=False, dataset_num=101):

@@ -20,11 +20,9 @@ class Train(ABC):
         self.flags = flags
         self.batch_size = self.config.get("BATCH", 256)
         if self.save_model: 
-            self.checkpoint_folder = f"{flags.checkpoint_folder.strip('/')}/{config['CHECKPOINT_NAME']}_{flags.model}/"
+            self.checkpoint_folder = os.path.join(flags.checkpoint_folder, f"{config['CHECKPOINT_NAME']}_{self.__class__.__name__.removeprefix('Train')}")
             if not os.path.exists(self.checkpoint_folder):
                 os.makedirs(self.checkpoint_folder)
-
-        self.checkpoint_folder = os.path.join(flags.checkpoint_folder, f"{config['CHECKPOINT_NAME']}_{self.__class__.__name__.removeprefix('Train')}")
         
         if hasattr(flags, "sample_algo"): 
             if flags.sample_algo is not None: 
