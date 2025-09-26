@@ -121,23 +121,6 @@ class EvalCNNMetric(Objective):
         )
         return cnn_method(eval_data)
 
-class EvalMeanSeparation(Objective): 
-    @staticmethod
-    def failure(): 
-        return 1
-    
-    @staticmethod
-    def direction():
-        return "minimize"
-    
-    def __call__(self, generated, energies, eval_data, config, metric=None, *args, **kwds):
-        metric = metric if metric is not None else config.get("SEPARATION_METRIC", "HistERatio")
-        eval = evaluate.HistogramSeparation(metric)
-
-        data = np.array([d_batch for _, _, d_batch in eval_data])
-        return eval(generated, data, energies)
-        
-
 class EvalLoss(Objective): 
     @staticmethod
     def failure(): 
@@ -172,10 +155,10 @@ class InferenceOptimize(ray.tune.Trainable):
         self.config = base_config
         self.n_steps = config.get("NSTEPS", 50)
         self.eval_data, _ = utils.load_data(flags, self.config, eval=True)
-        self.model_instance = trainer(flags=flags, config=self.config, load_data=False, inference=True, save_model=False)
+        self.model_instance = trainer(flags=flags, config=self.config, save_model=False, load_data=False, inference=True)
         self.model_instance.init_model()
 
-        self.objectives = [OBJECTIVES[obj] for obj in objectives]
+        self.objectives = objectives
 
 
     def evaluate(self, model, generated, energies): 
