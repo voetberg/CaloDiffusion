@@ -1,16 +1,272 @@
 from abc import ABC, abstractmethod
-from collections import defaultdict
 from typing import Any, Iterable, Literal, Sequence
 
+import ray.tune
 import numpy as np
 import torch
-import optuna
 import json
 import os
 
 from datetime import datetime
 from calodiffusion.utils import utils
 from calodiffusion.train import evaluate
+
+class Objective(ABC): 
+    @staticmethod
+    @abstractmethod
+    def direction() -> Literal['minimize', "maximize"]: 
+        raise NotImplementedError
+
+    @staticmethod
+    @abstractmethod
+    def failure() -> float: 
+        "What is returned if the model has failed to train"
+        raise NotImplementedError
+    
+    @staticmethod
+    def __call__(trained_model, eval_data, kwargs) -> float:
+        raise NotImplementedError
+
+class EvalCount(Objective): 
+    @staticmethod
+    def direction() -> Literal['minimize', 'maximize']:
+        return "minimize"
+    
+    @staticmethod
+    def failure():
+        return 10e8
+
+    @staticmethod
+    def get_forward(): 
+        class ModelForward(torch.nn.Module): 
+            def __init__(self, model, eval_data, sample_steps, sample_offset) -> None:
+                super().__init__()
+                self.model = model
+                self.E, self.layers, _ = next(iter(eval_data))
+                self.sample_steps = sample_steps
+                self.sample_offset = sample_offset
+
+            def __call__(self, x=None) -> Any:
+                self.model.sample(
+                    self.E.to(device=self.model.device),
+                    layers=self.layers.to(device=self.model.device),
+                    num_steps=self.sample_steps,
+                    debug=False,
+                    sample_offset=self.sample_offset,
+                )
+                
+        return ModelForward
+
+    @staticmethod
+    def __call__(trained_model, eval_data, config, *args, **kwargs) -> float:
+        random = np.random.default_rng()
+        weight_matrix = random.random((24, 24))
+        weight_matrix_compare = random.random((24, 24))
+
+        forward = EvalCount.get_forward()(
+            model=trained_model, 
+            eval_data=eval_data, 
+            sample_steps=config['NSTEPS'], 
+            sample_offset=0) # Only doing a single sample
+        
+        start = datetime.now()
+        forward()
+        inference_time = (start - datetime.now()).total_seconds()
+
+        start = datetime.now()
+        weight_matrix*weight_matrix_compare
+        reference_time = (start - datetime.now()).total_seconds()
+        return inference_time/reference_time
+
+
+class EvalFPD(Objective): 
+    @staticmethod
+    def direction() -> Literal['minimize', 'maximize']:
+        return "minimize"
+    
+    @staticmethod
+    def failure():
+        return 10e8
+
+    @staticmethod
+    def __call__(trained_model, generated, energies, eval_data, config, *args, **kwargs) -> float:
+
+        binning_dataset = trained_model.config.get("BIN_FILE", "binning_dataset.xml")
+        particle = trained_model.config.get("PART_TYPE", "photon")
+
+        fpd_calc = evaluate.FPD(
+            binning_dataset, 
+            particle, 
+            hgcal=utils.LoadJson(os.environ.get("CONFIG", {})).get("HGCAL", False))
+        try: 
+            return fpd_calc(generated=generated, energies=energies, eval_data=eval_data)
+        except evaluate.FPDCalculationError:
+            return EvalFPD.failure()
+        
+class EvalCNNMetric(Objective):
+    @staticmethod
+    def failure(): 
+        return 1 
+    
+    @staticmethod
+    def direction() -> Literal['minimize', 'maximize']:
+        return "maximize"
+    
+    @staticmethod
+    def __call__(trained_model, eval_data, config, *args, **kwargs):
+        cnn_method = evaluate.CNNCompare(
+            trained_model=trained_model, 
+            config= config, 
+            flags = config['flags']
+        )
+        return cnn_method(eval_data)
+
+class EvalMeanSeparation(Objective): 
+    @staticmethod
+    def failure(): 
+        return 1
+    
+    @staticmethod
+    def direction():
+        return "minimize"
+    
+    def __call__(self, generated, energies, eval_data, config, metric=None, *args, **kwds):
+        metric = metric if metric is not None else config.get("SEPARATION_METRIC", "HistERatio")
+        eval = evaluate.HistogramSeparation(metric)
+
+        data = np.array([d_batch for _, _, d_batch in eval_data])
+        return eval(generated, data, energies)
+        
+
+class EvalLoss(Objective): 
+    @staticmethod
+    def failure(): 
+        return 10**5
+    
+    @staticmethod
+    def direction():
+        return "minimize"
+    
+    def __call__(self, trained_model, eval_data, config, *args, **kwds):
+        energy, layers, data = next(iter(eval_data))
+
+        noise = torch.randn_like(data).to(device=trained_model.device)
+        data = data.to(device=trained_model.device)
+        energy = energy.to(device=trained_model.device)
+        layers = layers.to(device=trained_model.device)
+
+        return trained_model.compute_loss(data=data, energy=energy, noise=noise, layers=layers).detach().cpu().numpy()
+
+
+OBJECTIVES: dict[str, type[Objective]] = {
+    "COUNT": EvalCount(), 
+    "FPD": EvalFPD(), 
+    "CNN": EvalCNNMetric(), 
+    "LOSS": EvalLoss()
+}
+
+class InferenceOptimize(ray.tune.Trainable):
+    def setup(self, config:dict, base_config:dict, flags:dict, objectives: Sequence[type[Objective]], trainer) -> None:
+        # Get data, load the model
+        base_config.update(config)
+        self.config = base_config
+        self.n_steps = config.get("NSTEPS", 50)
+        self.eval_data, _ = utils.load_data(flags, self.config, eval=True)
+        self.model_instance = trainer(flags=flags, config=self.config, load_data=False, inference=True, save_model=False)
+        self.model_instance.init_model()
+
+        self.objectives = [OBJECTIVES[obj] for obj in objectives]
+
+
+    def evaluate(self, model, generated, energies): 
+        return {
+            obj.__name__: obj(
+                trained_model=model,
+                generated=generated,
+                energies=energies,
+                eval_data=self.eval_data,
+                config=self.config
+            ) 
+                for obj in self.objectives
+        }
+
+    def step(self):
+        try: 
+            model, _, _, _, _, _  = self.model_instance.pickup_checkpoint(
+                model=self.model_instance.model,
+                optimizer=None,
+                scheduler=None,
+                early_stopper=None,
+                n_epochs=0,
+                restart_training=False,
+            )
+
+            generated_samples, generated_energies = model.generate(
+                data_loader=self.eval_data, sample_steps=self.n_steps, debug=False, sample_offset=0,
+            )
+            objectives = self.objectives(
+                model, generated_samples, generated_energies
+            )
+        except RuntimeError as err:
+            print(f"Error in loading checkpoint: {err}")
+            objectives = {obj.__name__:obj.failure() for obj in self.objectives}
+        
+        ray.tune.report(objectives)
+
+class TrainOptimize(ray.tune.Trainable):
+    def setup(self, config:dict, base_config:dict, flags:dict, objectives: Sequence[type[Objective]], trainer) -> None:
+        # Get data, load the model
+        base_config.update(config)
+        self.config = base_config
+        self.n_steps = config.get("NSTEPS", 50)
+
+        if "n_unet_layers" in config.keys():
+            init_size = config.get("init_unet")
+            n_layers = config.get("n_unet_layers")
+            final_layer = int(config.get("layer_ratio") * init_size)  
+            unet_layers = [init_size for _ in range(n_layers)]
+            unet_layers.append(final_layer)
+            
+            self.config["LAYER_SIZE_UNET"] = unet_layers
+
+
+        self.eval_data, _ = utils.load_data(flags, config, eval=True)
+        self.objectives = [OBJECTIVES[obj] for obj in objectives]
+
+        try: 
+            self.trainer_instance = trainer(flags=flags, config=self.config, save_model=False, load_data=True)
+            self.trainer_instance.init_model()
+            self.trainer_instance.train()
+            self.model = self.trainer_instance.model
+
+        except RuntimeError as err:
+            print(f"Error in training model: {err}")
+            self.model = None
+
+    def evaluate(self, model, generated, energies):
+        return {
+            obj.__name__: obj(
+                trained_model=model,
+                generated=generated,
+                energies=energies,
+                eval_data=self.eval_data,
+                config=self.config
+            )
+                for obj in self.objectives
+        }
+
+    def step(self):
+        if self.model is None:
+            objectives = {obj.__name__:obj.failure() for obj in self.objectives}
+        
+        else: 
+            samples, energies = self.model.generate(
+                data_loader=self.eval_data, sample_steps=self.n_steps, debug=False, sample_offset=0,
+            )
+            objectives = self.evaluate(
+                self.model, samples, energies
+            )
+        ray.tune.report(objectives)
 
 
 class Optimize: 
@@ -46,289 +302,139 @@ class Optimize:
             "RESTART_T": Range allowed for T_MIN_{i}. T_MAX_{i} is decided by taking t_min_i as the bottom of the range and t_min_i + {top of the restart_t range} as the top
         }
     """
-    def __init__(self, flags, trainer: type[Train], objectives: Literal["COUNT", "FPD", "CNN"]) -> None:
+    def __init__(self, flags, trainer, objectives: str, inference: bool = False) -> None:
 
-        implemented_objectives: dict[str, type[Objective]] = {
-            "COUNT": Count(), 
-            "FPD": FPD(), 
-            "CNN": CNNMetric()
-        }
         self.flags = flags
+        self.config = utils.LoadJson(self.flags.config) if isinstance(self.flags.config, str) else self.flags.config
+        
+        self.checkpoint_folder = os.path.join(self.flags.results_folder, self.flags.study_name, "checkpoints/")
+        os.makedirs(self.checkpoint_folder, exist_ok=True)
+
         self.trainer = trainer
 
         self.objectives = []
         if isinstance(objectives, str):
             objectives = [objectives]
         for objective in objectives: 
-            self.objectives.append(implemented_objectives[objective])
+            try: 
+                self.objectives.append(OBJECTIVES[objective])
+            except KeyError:
+                raise ValueError(f"Objective {objective} not in {OBJECTIVES.keys()}")
 
-    def train(self, trial_config): 
-        config = self.suggest_config(trial_config)
-        train_model = self.trainer(flags=self.flags, config=config, save_model=False)
-        model, _, _ = train_model.train()
-        eval_data = train_model.loader_val
-        return model, eval_data, config
+        # Automatically make the results folder if it does not exist
+        if not os.path.exists(self.flags.results_folder):
+            os.makedirs(self.flags.results_folder)
 
-    def suggest_config(self, trial_config): 
-        if isinstance(self.flags.config, str): 
-            config = utils.LoadJson(self.flags.config)
-        else: 
-            config = self.flags.config 
+        self.experiment_name = f"{self.flags.study_name}_{'inference' if inference else 'train'}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
-        optimized_section = config.get("OPTIMIZE", {})
-        
-        for key, values in optimized_section.items(): 
-            if not isinstance(values, Iterable): 
-                raise ValueError("All optimization parameters must be given as a list.")
+    def _generic_param_space(self, settings: dict) -> dict:
+        config_space = {}
+        for setting, values in settings.items():
+            if not isinstance(values, Iterable):
+                continue # Ignore non-iterables
 
-            if key == "LAYER_SIZE_UNET": 
-                init_size = trial_config.suggest_int("init_unet", *values["init_unet"], step=2) # Always an even number
-                n_layers = trial_config.suggest_int("n_unet_layers", *values["n_unet_layers"])
-                final_layer = int(trial_config.suggest_int("layer_ratio", *values['layer_ratio']) * init_size)
-                
-                unet_layers = [init_size for _ in range(n_layers)]
-                unet_layers.append(final_layer)
-                config[key] = unet_layers
-                config['BLOCK_GROUPS'] = int(init_size/2) # TODO see how flexible this is. 
-
-            # This is a GROSS way to do this
-            elif key not in ("SAMPLER", "SAMPLER_SETTINGS"): 
-                if all([isinstance(i, str) for i in values]) or (True in values): 
-                    config[key] = trial_config.suggest_categorical(key, values)
-                elif all([isinstance(i, int) for i in values]): 
-                    config[key] = trial_config.suggest_int(key, *values)       
-                else: 
-                    config[key] = trial_config.suggest_float(key, *values)
-            else: 
-                config = self.suggest_sampler_config(config, trial_config)
-
-        return config
-
-    def suggest_hyperparam(self, setting_name, config, hyparam_settings, trial_config, type_=float): 
-        if setting_name in hyparam_settings.keys(): 
-            if type_ is float: 
-                config[setting_name] = trial_config.suggest_float(setting_name, *hyparam_settings[setting_name])
-            elif type_ is int: 
-                config[setting_name] = trial_config.suggest_int(setting_name, *hyparam_settings[setting_name])
-            else: 
-                config[setting_name] = trial_config.suggest_categorical(setting_name, hyparam_settings[setting_name])
-        return config 
+            if np.all([isinstance(i, str) for i in values]) or (True in values):
+                config_space[setting] = ray.tune.choice(values)
+            elif np.all([isinstance(i, int) for i in values]):
+                config_space[setting] = ray.tune.randint(*values)
+            else:
+                config_space[setting] = ray.tune.uniform(*values)
+        return config_space
     
-    def suggest_sampler_config(self, config, trial_config): 
-        optimized_section = config.get("OPTIMIZE", {})
-        sampler = config.get('SAMPLER')
-        if not sampler: 
-            sampler = trial_config.suggest_categorical("SAMPLER", optimized_section.get("SAMPLER", []))
-            config["SAMPLER"] = sampler
+    def make_param_space_inference(self): 
+        config_space = {}
 
-        sampler_config = defaultdict(dict)
-        sampler_settings = optimized_section.get("SAMPLER_SETTINGS", {})
+        sampler_options = self.config.get("OPTIMIZE", {}).get("SAMPLER", [])
+        if sampler_options != []: 
+            config_space["SAMPLER"] = ray.tune.choice(sampler_options)
 
-        # For each kind of sampler there are different hyperparams. Each need to be handled differently
-        # Samplers without hyperparams: ["DDIM", "DDPM", "DPMPP2M"]: 
-
-        if sampler in ["DPM", "DPMPPSDE", "DPMPP2S", "DPMPP2MSDE", "DPMAdaptive", "DPMPP3MSDE", "Restart"]:
-            sampler_config = self.suggest_hyperparam("ETA", sampler_config, sampler_settings, trial_config)
-            sampler_config = self.suggest_hyperparam("S_NOISE", sampler_config, sampler_settings, trial_config)
-
-        if sampler == "DPMAdaptive": 
-            config = self.suggest_hyperparam("ORDER", sampler_config, sampler_settings, trial_config, type_=int)
-            for setting in ["R_TOL", "A_TOL", "H_INIT", "T_ERROR", "ACCEPT_SAFETY"]: 
-                sampler_config = self.suggest_hyperparam(setting, sampler_config, sampler_settings, trial_config)
-
-        if sampler == 'DPMPPSDE': 
-            sampler_config = self.suggest_hyperparam("R", sampler_config, sampler_settings, trial_config)
-
-        if sampler == 'DPMPP2MSDE': 
-            sampler_config = self.suggest_hyperparam("SOLVER", sampler_config, sampler_settings, trial_config, type_=str)
-
-        if sampler in ["LMS", "Euler", "Heun", "DPM2", "Restart"]: 
-            # Samplers in EDM class
-            sampler_config = self.suggest_hyperparam("NOISY_SAMPLE", sampler_config, sampler_settings, trial_config, type_=str)
-            sampler_config = self.suggest_hyperparam("ORIG_SCHEDULE", sampler_config, sampler_settings, trial_config, type_=str)
-            if sampler_config.get("ORIG_SCHEDULE", True): 
-                sampler_config = self.suggest_hyperparam("C1", sampler_config, sampler_settings, trial_config)
-
-            sampler_config = self.suggest_hyperparam("RHO", sampler_config, sampler_settings, trial_config, type_=int)
-            sampler_config = self.suggest_hyperparam("SIGMA_MIN", sampler_config, sampler_settings, trial_config)
-
-            if sampler in ["Euler", "Heun", "DPM2", "Restart"]: 
-                sampler_config = self.suggest_hyperparam("S_MIN", sampler_config, sampler_settings, trial_config)
-                sampler_config = self.suggest_hyperparam("S_MAX", sampler_config, sampler_settings, trial_config)
-                sampler_config = self.suggest_hyperparam("S_NOISE", sampler_config, sampler_settings, trial_config)
-                sampler_config = self.suggest_hyperparam("S_CHURN", sampler_config, sampler_settings, trial_config)
+        noise_schedules = self.config.get("OPTIMIZE", {}).get("NOISE_SCHED", ["log", "linear"])
+        config_space["NOISE_SCHED"] = ray.tune.choice(noise_schedules)
         
-        if sampler == "LMS": 
-            sampler_config = self.suggest_hyperparam("ORDER", sampler_config, sampler_settings, trial_config, type_=int)
+        steps = self.config.get("OPTIMIZE", {}).get("NSTEPS", [50, 500])
+        config_space["NSTEPS"] = ray.tune.randint(*steps)
 
-        if sampler == "Restart": 
-            sampler_config = self.suggest_hyperparam("RESTART_GAMMA", sampler_config, sampler_settings, trial_config)
-            sampler_config = self.suggest_hyperparam("C2", sampler_config, sampler_settings, trial_config)
+        time_embeds = self.config.get("OPTIMIZE", {}).get("TIME_EMBED", ["sigma", "log", "sin", "id"])
+        config_space["TIME_EMBED"] = ray.tune.choice(time_embeds)
 
-            sampler_config = self.suggest_hyperparam("RESTART_I", sampler_config, sampler_settings, trial_config, type_=int)
-            sampler_config = self.suggest_hyperparam("N_RESTART", sampler_config, sampler_settings, trial_config, type_=int)
-            n_restart = sampler_config.get("N_RESTART", 4)
-            restart_settings = {}
-            for num in range(sampler_config.get('RESTART_I', 4)): 
-                k_i = trial_config.suggest_int(f"RESTART_K_{num}", *sampler_settings.get("RESTART_K", [1, 10]))
-                restart_t_range = sampler_settings.get("RESTART_T", [0.01, 50])
-                t_min_i = trial_config.suggest_float(f"RESTART_T_MIN_{num}", *restart_t_range)
-                t_max_i = trial_config.suggest_float(f"RESTART_T_MAX_{num}", t_min_i, t_min_i+restart_t_range[-1])
-                restart_settings[str(num)] = [n_restart, k_i, t_min_i, t_max_i]
-            sampler_config['RESTART_LIST'] = restart_settings
-        config['SAMPLER_SETTINGS'] = sampler_config
-        return config
+        # Go through the rest of the sampler settings
+        sampler_settings = self.config.get("OPTIMIZE", {}).get("SAMPLER_SETTINGS", {})
+        config_space.update(self._generic_param_space(sampler_settings))
 
-    def eval(self, model, eval_data, config) -> Sequence: 
-        config['flags'] = self.flags
-        return [obj(model, eval_data, config) for obj in self.objectives]
+        return config_space
+    
+    def make_param_space_training(self):
+        config_space = {}
+        # Generic hyperparameters
+        optimized_section = self.config.get("OPTIMIZE", {})
+        config_space.update(self._generic_param_space(optimized_section))
 
-    def objective(self, trial) -> tuple: 
-        try: 
-            model, eval_data, config = self.train(trial)
-        except RuntimeError as err:
-            if "Kernel size can't be greater than actual input size" in str(err): 
-                objectives = [obj.failure() for obj in self.objectives]
-                return objectives
-            else: 
-                raise RuntimeError(err)
+        # Sub parameters for UNet architecture
+        if "LAYER_SIZE_UNET" in optimized_section.keys(): 
+            config_space['init_unet']  = ray.tune.qrandint(*optimized_section["LAYER_SIZE_UNET"]["init_unet"], 2)
+            config_space['n_unet_layers'] = ray.tune.randint(*optimized_section["LAYER_SIZE_UNET"]["n_unet_layers"])
+            config_space['layer_ratio'] = ray.tune.uniform(*optimized_section["LAYER_SIZE_UNET"]["layer_ratio"])
             
-        objectives = self.eval(model, eval_data, config)
-        return objectives
+        return config_space
+    
+    def _run_config(self): 
+        return ray.tune.RunConfig(
+            name=self.experiment_name,
+            storage_path=self.checkpoint_folder,
+            stop={
+                "training_iteration": self.config.get("MAXEPOCH", 100),
+            },
+            checkpoint_config=ray.tune.CheckpointConfig(
+                checkpoint_frequency=5, checkpoint_at_end=True, 
+            ),
+        )
 
-    def save_results(self, study): 
-        study_items = dict(study.trials_dataframe())
-        study_results = {} 
-        for key, value in study_items.items(): 
-            study_results[key] = value.to_list()
+    def _optimize(self, resources: dict, tuner_instance: callable, param_space:callable):
 
-        save_loc = self.flags.results_folder
-        if not os.path.exists(save_loc): 
-            os.makedirs(save_loc)
-
-        report_path = f"{save_loc.rstrip('/')}/{self.flags.study_name}_report.json"
-        with open(report_path, 'a') as f: 
-            json.dump(study_results, f, default=str)
+        def make_trainable(base_config, flags, objectives, trainer):
+            class CustomTrainable(tuner_instance):
+                def setup(self, config):
+                    super().setup(config, base_config, flags, objectives, trainer)
+            return CustomTrainable
 
 
-    def __call__(self) -> None:
-        study = optuna.create_study(
-            study_name=self.flags.study_name, 
-            load_if_exists=True, 
-            directions=[obj.direction() for obj in self.objectives]
+        if os.path.exists(os.path.join(self.checkpoint_folder, "tuner.pkl")):
+            return ray.tune.Tuner.restore(
+                self.checkpoint_folder,
+                make_trainable(self.config, self.flags, self.objectives, self.trainer)
             )
-        study.optimize(
-            self.objective, 
-            n_trials=self.flags.n_trials, 
-            timeout=300
+        else: 
+            return ray.tune.Tuner(
+            ray.tune.with_resources(make_trainable(self.config, self.flags, self.objectives, self.trainer), resources=resources),
+            tune_config=ray.tune.TuneConfig(
+                metric="mean_accuracy",
+                mode="max",
+                num_samples=self.flags.n_trials, 
+            ),
+            run_config=self._run_config(),
+            param_space=param_space()
         )
-        self.save_results(study)
+
+    def inference_optimize(self, resources:dict):
+        return self._optimize(resources, InferenceOptimize, self.make_param_space_inference)
+
+    def train_optimize(self, resources:dict):
+        return self._optimize(resources, TrainOptimize, self.make_param_space_training)
+
+    def __call__(self, n_gpu=0, inference:bool=True) -> None:
+
+        ray.init()
+        resources = {"cpu": 0, "gpu": n_gpu}
+        if inference: 
+            tuner = self.inference_optimize(resources=resources)
+        else: 
+            tuner = self.train_optimize(resources=resources)
+
+        tuner.fit()
         
-
-class Objective(ABC): 
-    @staticmethod
-    @abstractmethod
-    def direction() -> Literal['minimize', "maximize"]: 
-        raise NotImplementedError
-
-    @staticmethod
-    @abstractmethod
-    def failure() -> float: 
-        "What is returned if the model has failed to train"
-        raise NotImplementedError
-    
-    @staticmethod
-    def __call__(trained_model, eval_data, kwargs) -> float:
-        raise NotImplementedError
-    
-
-class Count(Objective): 
-    @staticmethod
-    def direction() -> Literal['minimize', 'maximize']:
-        return "minimize"
-    
-    @staticmethod
-    def failure():
-        return 10e8
-
-    @staticmethod
-    def get_forward(): 
-        class ModelForward(torch.nn.Module): 
-            def __init__(self, model, eval_data, sample_steps, sample_offset) -> None:
-                super().__init__()
-                self.model = model
-                self.eval_data = eval_data
-                self.E, self.layers, _ = next(iter(eval_data))
-                self.sample_steps = sample_steps
-                self.sample_offset = sample_offset
-
-            def __call__(self, x=None) -> Any:
-                self.model.generate(
-                    data_loader=self.eval_data, 
-                    sample_steps=self.sample_steps, 
-                    sample_offset=self.sample_offset
-                )
-                
-        return ModelForward
-
-    @staticmethod
-    def __call__(trained_model, eval_data, trial_config) -> float:
-        random = np.random.default_rng()
-        weight_matrix = random.random((24, 24))
-        weight_matrix_compare = random.random((24, 24))
-
-        forward = Count.get_forward()(
-            model=trained_model, 
-            eval_data=eval_data, 
-            sample_steps=trial_config['NSTEPS'], 
-            sample_offset=0) # Only doing a single sample
+        final_df = tuner.get_results().get_dataframe().to_json()
+        fp = os.path.join(self.flags.results_folder, self.flags.study_name, "results.json")
+        os.makedirs(os.path.dirname(fp), exist_ok=True)
+        with open(fp, 'w') as f: 
+            json.dump(final_df, f)
         
-        start = datetime.now()
-        forward()
-        inference_time = (start - datetime.now()).total_seconds()
-
-        start = datetime.now()
-        weight_matrix*weight_matrix_compare
-        reference_time = (start - datetime.now()).total_seconds()
-        return inference_time/reference_time
-
-
-class FPD(Objective): 
-    @staticmethod
-    def direction() -> Literal['minimize', 'maximize']:
-        return "minimize"
-    
-    @staticmethod
-    def failure():
-        return 10e8
-
-    @staticmethod
-    def __call__(trained_model, eval_data, kwargs) -> float:
-
-        binning_dataset = trained_model.config.get("BIN_FILE", "binning_dataset.xml")
-        particle = trained_model.config.get("PART_TYPE", "photon")
-
-        fpd_calc = evaluate.FDP(binning_dataset, particle)
-        
-        try: 
-            return fpd_calc(trained_model, eval_data, kwargs)
-        except evaluate.FDPCalculationError:
-            return FPD.failure()
-        
-class CNNMetric(Objective):
-    @staticmethod
-    def failure(): 
-        return 1 
-    
-    @staticmethod
-    def direction() -> Literal['minimize', 'maximize']:
-        return "maximize"
-    
-    @staticmethod
-    def __call__(trained_model, eval_data, kwargs):
-        cnn_method = evaluate.CNNCompare(
-            trained_model=trained_model, 
-            config= kwargs, 
-            flags = kwargs['flags']
-        )
-        return cnn_method(eval_data)
