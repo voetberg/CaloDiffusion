@@ -158,22 +158,26 @@ class InferenceOptimize(ray.tune.Trainable):
         self.model_instance = trainer(flags=flags, config=self.config, save_model=False, load_data=False, inference=True)
         self.model_instance.init_model()
 
-        self.objectives = objectives
+        self.objectives = [EvalFPD(), EvalCount()]
+        self.objective_names = ['FDP', 'COUNT']
+
+        self.current_step = 0
 
 
     def evaluate(self, model, generated, energies): 
         return {
-            obj.__name__: obj(
+            name: obj(
                 trained_model=model,
                 generated=generated,
                 energies=energies,
                 eval_data=self.eval_data,
                 config=self.config
             ) 
-                for obj in self.objectives
+                for name, obj in zip(self.objective_names, self.objectives)
         }
 
     def step(self):
+        self.current_step += 1
         try: 
             model, _, _, _, _, _  = self.model_instance.pickup_checkpoint(
                 model=self.model_instance.model,
@@ -187,14 +191,17 @@ class InferenceOptimize(ray.tune.Trainable):
             generated_samples, generated_energies = model.generate(
                 data_loader=self.eval_data, sample_steps=self.n_steps, debug=False, sample_offset=0,
             )
-            objectives = self.objectives(
+            objectives = self.evaluate(
                 model, generated_samples, generated_energies
             )
         except RuntimeError as err:
             print(f"Error in loading checkpoint: {err}")
-            objectives = {obj.__name__:obj.failure() for obj in self.objectives}
+            objectives = {name:obj.failure() for name, obj in zip(self.objective_names, self.objectives)}
         
+        objectives["step"] = self.current_step
         ray.tune.report(objectives)
+
+        return objectives
 
 class TrainOptimize(ray.tune.Trainable):
     def setup(self, config:dict, base_config:dict, flags:dict, objectives: Sequence[type[Objective]], trainer) -> None:
@@ -212,9 +219,16 @@ class TrainOptimize(ray.tune.Trainable):
             
             self.config["LAYER_SIZE_UNET"] = unet_layers
 
+        self.objectives = [EvalFPD(), EvalCount()]
+        self.objective_names = ['FDP', 'COUNT']
+
+        self.current_step = 0
 
         self.eval_data, _ = utils.load_data(flags, config, eval=True)
-        self.objectives = [OBJECTIVES[obj] for obj in objectives]
+        self.objective_names = ["FDP", "LOSS"]
+        self.objectives = [EvalFPD(), EvalLoss()]
+
+        self.trainer_module = trainer
 
         try: 
             self.trainer_instance = trainer(flags=flags, config=self.config, save_model=False, load_data=True)
@@ -228,29 +242,46 @@ class TrainOptimize(ray.tune.Trainable):
 
     def evaluate(self, model, generated, energies):
         return {
-            obj.__name__: obj(
+            name: obj(
                 trained_model=model,
                 generated=generated,
                 energies=energies,
                 eval_data=self.eval_data,
                 config=self.config
             )
-                for obj in self.objectives
+                for name, obj in zip(self.objective_names, self.objectives)
         }
 
+    def _train(self): 
+        try: 
+            trainer_instance = self.trainer_module(flags=flags, config=self.config, save_model=False, load_data=True)
+            trainer_instance.init_model()
+            trainer_instance.train()
+            model = trainer_instance.model
+
+        except RuntimeError as err:
+            print(f"Error in training model: {err}")
+            model = None
+        return model
+
     def step(self):
+        self.current_step +=1
+        model = self._train()
+
         if self.model is None:
-            objectives = {obj.__name__:obj.failure() for obj in self.objectives}
+            objectives = {name: obj.failure() for name, obj in zip(self.objective_names, self.objectives)}
         
         else: 
-            samples, energies = self.model.generate(
+            samples, energies = model.generate(
                 data_loader=self.eval_data, sample_steps=self.n_steps, debug=False, sample_offset=0,
             )
             objectives = self.evaluate(
-                self.model, samples, energies
+                model, samples, energies
             )
+        objective['step'] = self.current_step
         ray.tune.report(objectives)
 
+        return objectives
 
 class Optimize: 
     """
@@ -365,7 +396,7 @@ class Optimize:
             name=self.experiment_name,
             storage_path=self.checkpoint_folder,
             stop={
-                "training_iteration": self.config.get("MAXEPOCH", 100),
+                "step": self.config.get("MAXEPOCH", 100),
             },
             checkpoint_config=ray.tune.CheckpointConfig(
                 checkpoint_frequency=5, checkpoint_at_end=True, 
@@ -390,8 +421,8 @@ class Optimize:
             return ray.tune.Tuner(
             ray.tune.with_resources(make_trainable(self.config, self.flags, self.objectives, self.trainer), resources=resources),
             tune_config=ray.tune.TuneConfig(
-                metric="mean_accuracy",
-                mode="max",
+                metric="FDP",
+                mode="min",
                 num_samples=self.flags.n_trials, 
             ),
             run_config=self._run_config(),
@@ -404,10 +435,18 @@ class Optimize:
     def train_optimize(self, resources:dict):
         return self._optimize(resources, TrainOptimize, self.make_param_space_training)
 
-    def __call__(self, n_gpu=0, inference:bool=True) -> None:
+    def __call__(self, inference:bool=True) -> None:
 
         ray.init()
-        resources = {"cpu": 0, "gpu": n_gpu}
+        n_accessable_gpu = len(os.environ['SLURM_JOB_GPUS'].split(','))
+        cpu_ratio = int(os.environ['SLURM_JOB_CPUS_PER_NODE'])/n_accessable_gpu
+
+        if cpu_ratio >= 64:  # Estimated number of max threads 
+            n_cpu_per_job =  os.environ['NUMEXPR_MAX_THREADS'] - 2
+        else: 
+            n_cpu_per_job = int(cpu_ratio)
+            
+        resources = {"cpu": n_cpu_per_job, "gpu": 1}
         if inference: 
             tuner = self.inference_optimize(resources=resources)
         else: 

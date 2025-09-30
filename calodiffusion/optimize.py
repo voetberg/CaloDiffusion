@@ -17,9 +17,8 @@ from calodiffusion.utils import utils
 @click.option('-n', '--nevts', type=int, default=-1, help='Number of events to load')
 @click.option('--frac', type=float, default=0.85, help='Fraction of total events used for training')
 @click.option('--hgcal/--no-hgcal', default=None, help='Use hgcal settings - overwrites config')
-@click.option('--n-gpu', default=0)
 @click.pass_context
-def optimize(ctx, config, objectives, study_name, n_trials, data_folder, results_folder, hgcal, nevts, frac, n_gpu):
+def optimize(ctx, config, objectives, study_name, n_trials, data_folder, results_folder, hgcal, nevts, frac):
     args = utils.dotdict({
         'objectives': objectives,
         'study_name': study_name,
@@ -28,7 +27,6 @@ def optimize(ctx, config, objectives, study_name, n_trials, data_folder, results
         'results_folder': results_folder,
         'nevts': nevts,
         'frac': frac,
-        'n_gpu': n_gpu
     })
     ctx.ensure_object(utils.dotdict)
     ctx.obj = args
@@ -53,12 +51,12 @@ def train():
 @train.command()
 @click.pass_context
 def layer(ctx):
-    Optimize(flags=ctx.obj, trainer=TrainLayerModel, objectives=ctx.obj.objectives)(n_gpu=ctx.obj.n_gpu)
+    Optimize(flags=ctx.obj, trainer=TrainLayerModel, objectives=ctx.obj.objectives)()
 
 @train.command()
 @click.pass_context
 def diffusion(ctx): 
-    Optimize(flags=ctx.obj, trainer=TrainDiffusion, objectives=ctx.obj.objectives)(n_gpu=ctx.obj.n_gpu)
+    Optimize(flags=ctx.obj, trainer=TrainDiffusion, objectives=ctx.obj.objectives)()
 
 
 @optimize.group()
@@ -72,12 +70,12 @@ def sample(ctx, model_loc):
 @click.pass_context
 def layer_inference(ctx, layer_model):
     ctx.obj.config['layer_model'] = layer_model
-    Optimize(flags=ctx.obj, trainer=TrainLayerModel, objectives=ctx.obj.objectives, inference=True)(n_gpu=ctx.obj.n_gpu)
+    Optimize(flags=ctx.obj, trainer=TrainLayerModel, objectives=ctx.obj.objectives, inference=True)()
 
 @sample.command("diffusion")
 @click.pass_context
 def diffusion_inference(ctx): 
-    Optimize(flags=ctx.obj, trainer=TrainDiffusion, objectives=ctx.obj.objectives, inference=True)(n_gpu=ctx.obj.n_gpu)
+    Optimize(flags=ctx.obj, trainer=TrainDiffusion, objectives=ctx.obj.objectives, inference=True)()
 
 
 if __name__ == "__main__":
