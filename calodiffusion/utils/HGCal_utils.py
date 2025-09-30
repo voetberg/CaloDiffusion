@@ -928,3 +928,11 @@ class TrainDNNCompare:
         result_pred = result_pred.cpu().numpy()
         iso_reg = IsotonicRegression(out_of_bounds='clip', y_min=1e-6, y_max=1.-1e-6).fit(result_pred, result_true)
         return iso_reg
+
+
+def get_device():
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+    return device
