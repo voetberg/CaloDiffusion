@@ -147,7 +147,9 @@ class CaloDiffusion(Diffusion):
     ):
         embed: dict[str, callable] = {
             "sigma": lambda sigma: sigma / (1 + sigma**2).sqrt(), 
-            "log": lambda sigma:  0.5 * torch.log(sigma)
+            "log": lambda sigma:  0.5 * torch.log(sigma), 
+            "id": lambda sigma: sigma,
+            "sin": lambda sigma: torch.sin(sigma)
         }
         return embed[self.time_embed](sigma)
     
