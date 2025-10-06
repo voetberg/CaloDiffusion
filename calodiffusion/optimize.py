@@ -13,7 +13,7 @@ from calodiffusion.utils import utils
 @click.option('--name', 'study_name', default=f"search_study_{datetime.timestamp(datetime.now())}", help='Name of the study')
 @click.option('--n-trials', type=int, default=30, help='Number of trials to run')
 @click.option('--data-folder', default='./data/', help='Folder containing data and MC files')
-@click.option('--results-folder', default='/optimization_history/', help='Folder to save results')
+@click.option('--results-folder', default=f'{os.environ.get("HOME", "")}/optimization_history/', help='Folder to save results')
 @click.option('-n', '--nevts', type=int, default=-1, help='Number of events to load')
 @click.option('--frac', type=float, default=0.85, help='Fraction of total events used for training')
 @click.option('--hgcal/--no-hgcal', default=None, help='Use hgcal settings - overwrites config')
@@ -51,12 +51,12 @@ def train():
 @train.command()
 @click.pass_context
 def layer(ctx):
-    Optimize(flags=ctx.obj, trainer=TrainLayerModel, objectives=ctx.obj.objectives)()
+    Optimize(flags=ctx.obj, trainer=TrainLayerModel, objectives=ctx.obj.objectives, inference=False)()
 
 @train.command()
 @click.pass_context
 def diffusion(ctx): 
-    Optimize(flags=ctx.obj, trainer=TrainDiffusion, objectives=ctx.obj.objectives)()
+    Optimize(flags=ctx.obj, trainer=TrainDiffusion, objectives=ctx.obj.objectives, inference=False)()
 
 
 @optimize.group()
