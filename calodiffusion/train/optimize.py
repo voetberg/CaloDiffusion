@@ -10,6 +10,7 @@ import os
 from datetime import datetime
 from calodiffusion.utils import utils
 from calodiffusion.train import evaluate
+from calodiffusion.train.train import Train
 
 class Objective(ABC): 
     @staticmethod
