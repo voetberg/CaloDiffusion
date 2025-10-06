@@ -1,6 +1,5 @@
 import pickle
 import calodiffusion.utils.consts as constants
-from calodiffusion.utils.utils import get_device
 from sklearn.isotonic import IsotonicRegression
 import os
 import numpy as np
