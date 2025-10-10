@@ -99,7 +99,7 @@ class EvalFPD(Objective):
         fpd_calc = evaluate.FPD(
             binning_dataset, 
             particle, 
-            hgcal=utils.LoadJson(os.environ.get("CONFIG", {})).get("HGCAL", False))
+            hgcal=config.get("HGCAL", False))
         try: 
             return fpd_calc(generated=generated, energies=energies, eval_data=eval_data)
         except evaluate.FPDCalculationError:
@@ -152,6 +152,7 @@ OBJECTIVES: dict[str, type[Objective]] = {
 
 class InferenceOptimize(ray.tune.Trainable):
     def setup(self, config:dict, base_config:dict, flags:utils.dotdict, objectives: Sequence[type[Objective]], trainer) -> None:
+        
         # Get data, load the model
         base_config.update(config)
         self.config = base_config
@@ -165,6 +166,20 @@ class InferenceOptimize(ray.tune.Trainable):
 
         self.current_step = 0
 
+        try: 
+            self.model, _, _, _, _, _  = self.model_instance.pickup_checkpoint(
+                model=self.model_instance.model,
+                optimizer=None,
+                scheduler=None,
+                early_stopper=None,
+                n_epochs=0,
+                restart_training=False,
+            )
+
+        except RuntimeError as err:
+            print(f"Error in loading checkpoint: {err}")
+            print(traceback.print_exception(err))
+            self.model = None
 
     def evaluate(self, model, generated, energies): 
         return {
@@ -181,23 +196,14 @@ class InferenceOptimize(ray.tune.Trainable):
     def step(self):
         self.current_step += 1
         try: 
-            model, _, _, _, _, _  = self.model_instance.pickup_checkpoint(
-                model=self.model_instance.model,
-                optimizer=None,
-                scheduler=None,
-                early_stopper=None,
-                n_epochs=0,
-                restart_training=False,
-            )
-
-            generated_samples, generated_energies = model.generate(
+            generated_samples, generated_energies = self.model.generate(
                 data_loader=self.eval_data, sample_steps=self.n_steps, debug=False, sample_offset=0,
             )
             objectives = self.evaluate(
-                model, generated_samples, generated_energies
+                self.model, generated_samples, generated_energies
             )
-        except RuntimeError as err:
-            print(f"Error in loading checkpoint: {err}")
+        except Exception as err:
+            print("ERROR runnning generation")
             print(traceback.print_exception(err))
             objectives = {name:obj.failure() for name, obj in zip(self.objective_names, self.objectives)}
         
@@ -225,14 +231,27 @@ class TrainOptimize(ray.tune.Trainable):
         self.objectives = [EvalFPD(), EvalCount()]
         self.objective_names = ['FDP', 'COUNT']
 
-        self.current_step = 0
-
         self.eval_data, _ = utils.load_data(flags, self.config, eval=True)
-        self.objective_names = ["FDP", "LOSS"]
-        self.objectives = [EvalFPD(), EvalLoss()]
 
         self.flags = flags
-        self.trainer_module = trainer
+        try: 
+            self.trainer = trainer(flags=self.flags, config=self.config, save_model=False, load_data=True, inference=False)
+            self.trainer.init_model()
+
+            self.training_losses = dict()
+            self.val_losses = dict()
+
+            self.early_stopper = utils.EarlyStopper(
+                patience=self.config["EARLYSTOP"], mode="val_loss", min_delta=1e-5
+            )
+            self.optimizer = torch.optim.Adam(self.model.parameters(), lr=float(self.config["LR"]))
+            self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer=optimizer, factor=0.1, patience=15
+            )
+        except RuntimeError as err: 
+            print(traceback.print_exception(err))
+
+        self.current_epoch = 0
 
 
     def evaluate(self, model, generated, energies):
@@ -249,16 +268,21 @@ class TrainOptimize(ray.tune.Trainable):
 
     def _train(self): 
         try: 
-            trainer_instance = self.trainer_module(flags=self.flags, config=self.config, save_model=False, load_data=True)
-            trainer_instance.init_model()
-            trainer_instance.train()
-            model = trainer_instance.model
+            model, _, self.training_losses, self.val_losses, self.optimizer, self.scheduler, self.early_stopper = self.trainer.training_loop(
+                self.optimizer, 
+                self.scheduler, 
+                self.early_stopper, 
+                self.current_epoch, 
+                1, 
+                self.training_losses, 
+                self.val_losses
+            )
 
         except RuntimeError as err:
             print(f"Error in training model: {err}")
-            print(traceback.print_exception(err))
-            assert False
             model = None
+
+        self.current_epoch += 1
         return model
 
     def step(self):
@@ -390,11 +414,12 @@ class Optimize:
         return config_space
     
     def _run_config(self): 
+        max_epochs = 1 if self.inference else self.config.get("MAXEPOCH", 100)
         return ray.tune.RunConfig(
             name=self.experiment_name,
             storage_path=self.checkpoint_folder,
             stop={
-                "step": self.config.get("MAXEPOCH", 100),
+                "step": max_epochs
             },
             checkpoint_config=ray.tune.CheckpointConfig(
                 checkpoint_frequency=5, checkpoint_at_end=True, 
