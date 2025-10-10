@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import h5py as h5
 import torch
 import torch.utils.data as torchdata
+from einops import rearrange
 
 from calodiffusion.utils import utils
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"

@@ -68,7 +68,7 @@ def inference(ctx, debug, config, data_folder, checkpoint_folder, layer_only, jo
 @click.option("--model-loc", default=None, help="Specific folder for loading existing model")
 @click.pass_context
 def sample(ctx, generated, sample_steps, sample_algo, sample_offset, sparse_decoding, train_sampler, model_loc):
-    ctx.obj.config['SAMPLER'] = sample_algo
+    #ctx.obj.config['SAMPLER'] = sample_algo
     if "SAMPLER_OPTIONS" not in ctx.obj.config.keys(): 
         ctx.obj.config['SAMPLER_OPTIONS'] = {}
     if train_sampler is not None: 
@@ -78,8 +78,8 @@ def sample(ctx, generated, sample_steps, sample_algo, sample_offset, sparse_deco
         raise ValueError("model-loc is required")
     
     ctx.obj.model_loc = model_loc
-    ctx.obj.sample_steps = sample_steps
-    ctx.obj.sample_algo = sample_algo 
+    #ctx.obj.sample_steps = sample_steps
+    #ctx.obj.sample_algo = sample_algo 
     ctx.obj.sample_offset = sample_offset
     ctx.obj.sparse_decoding = sparse_decoding
     ctx.obj.generated = generated
