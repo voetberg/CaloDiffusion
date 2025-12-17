@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 import traceback
 from typing import Any, Iterable, Literal, Sequence
+import pprint
 
 import ray.tune
 import numpy as np
@@ -155,10 +156,14 @@ class InferenceOptimize(ray.tune.Trainable):
         
         # Get data, load the model
         base_config.update(config)
+        print("Using the following config:")
+        pprint.pp(base_config)
         self.config = base_config
         self.n_steps = config.get("NSTEPS", 50)
         self.eval_data, _ = utils.load_data(flags, self.config, eval=True)
         self.model_instance = trainer(flags=flags, config=self.config, save_model=False, load_data=False)
+        print("Creating Model with the following flags:")
+        pprint.pp(flags)
         self.model_instance.init_model()
 
         self.objectives = [EvalFPD(), EvalCount()]
@@ -360,7 +365,7 @@ class Optimize:
         if not os.path.exists(self.flags.results_folder):
             os.makedirs(self.flags.results_folder)
 
-        self.experiment_name = f"{self.flags.study_name}_{'inference' if inference else 'train'}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        self.experiment_name = f"{'inference' if inference else 'train'}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         self.inference = inference
 
     def _generic_param_space(self, settings: dict) -> dict:
@@ -380,22 +385,14 @@ class Optimize:
     def make_param_space_inference(self): 
         config_space = {}
 
-        sampler_options = self.config.get("OPTIMIZE", {}).get("SAMPLER", [])
-        if sampler_options != []: 
-            config_space["SAMPLER"] = ray.tune.choice(sampler_options)
-
-        noise_schedules = self.config.get("OPTIMIZE", {}).get("NOISE_SCHED", ["log", "linear"])
-        config_space["NOISE_SCHED"] = ray.tune.choice(noise_schedules)
-        
-        steps = self.config.get("OPTIMIZE", {}).get("NSTEPS", [50, 500])
-        config_space["NSTEPS"] = ray.tune.randint(*steps)
-
-        time_embeds = self.config.get("OPTIMIZE", {}).get("TIME_EMBED", ["sigma", "log", "sin", "id"])
-        config_space["TIME_EMBED"] = ray.tune.choice(time_embeds)
+        config_space.update(self._generic_param_space(self.config.get('OPTIMIZE', {})))
 
         # Go through the rest of the sampler settings
-        sampler_settings = self.config.get("OPTIMIZE", {}).get("SAMPLER_SETTINGS", {})
-        config_space.update(self._generic_param_space(sampler_settings))
+        sampler_settings = self.config.get("OPTIMIZE", {}).get("SAMPLER_OPTIONS", {})
+        config_space['SAMPLER_OPTIONS'] = self._generic_param_space(sampler_settings)
+
+        print("Running with selected options")
+        pprint.pp(config_space)
 
         return config_space
     
@@ -421,13 +418,10 @@ class Optimize:
             stop={
                 "step": max_epochs
             },
-            checkpoint_config=ray.tune.CheckpointConfig(
-                checkpoint_frequency=5, checkpoint_at_end=True, 
-            ),
         )
 
     def _optimize(self, resources: dict, tuner_instance: callable, param_space:callable):
-
+        
         def make_trainable(base_config, flags, objectives, trainer):
             class CustomTrainable(tuner_instance):
                 def setup(self, config):
@@ -438,9 +432,9 @@ class Optimize:
             return CustomTrainable
 
 
-        if os.path.exists(os.path.join(self.checkpoint_folder, "tuner.pkl")):
+        if os.path.exists(os.path.join(self.checkpoint_folder, self.experiment_name, "tuner.pkl")):
             return ray.tune.Tuner.restore(
-                self.checkpoint_folder,
+                os.path.join(self.checkpoint_folder, self.experiment_name),
                 make_trainable(self.config, self.flags, self.objectives, self.trainer)
             )
         else: 
@@ -479,6 +473,7 @@ class Optimize:
             
         resources = {"cpu": n_cpu_per_job, "gpu": n_gpu}
         if self.inference: 
+            print("Running inference job...")
             tuner = self.inference_optimize(resources=resources)
         else: 
             tuner = self.train_optimize(resources=resources)
