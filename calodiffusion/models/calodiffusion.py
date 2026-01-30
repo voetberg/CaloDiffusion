@@ -76,6 +76,10 @@ class CaloDiffusion(Diffusion):
                 cond_embed=(self.config.get("COND_EMBED", "sin") == "sin"),
                 cond_size=cond_size,
                 time_embed=(self.config.get("TIME_EMBED", "sin") == "sin"),
+                n_mid_blocks=self.config.get("MID_BLOCKS", 2), 
+                n_up_blocks=self.config.get("UP_BLOCKS", 1),
+                n_down_blocks=self.config.get("DOWN_BLOCKS", 1),
+                use_convnext=bool(self.config.get("CONVEXT", False))
             ).to(device=self.device)
 
         return model.to(self.device)

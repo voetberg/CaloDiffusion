@@ -145,12 +145,12 @@ class SinusoidalPositionEmbeddings(nn.Module):
 
 
 class Block(nn.Module):
-    def __init__(self, dim, dim_out, groups=8, cylindrical=False):
+    def __init__(self, dim, dim_out, groups=8, cylindrical=False, kernel_size=3):
         super().__init__()
         if not cylindrical:
-            self.proj = nn.Conv3d(dim, dim_out, kernel_size=3, padding=1)
+            self.proj = nn.Conv3d(dim, dim_out, kernel_size=kernel_size, padding=1)
         else:
-            self.proj = CylindricalConv(dim, dim_out, kernel_size=3, padding=1)
+            self.proj = CylindricalConv(dim, dim_out, kernel_size=kernel_size, padding=1)
         try: 
             self.norm = nn.GroupNorm(groups, dim_out)
         except ValueError: 
@@ -171,7 +171,7 @@ class Block(nn.Module):
 
 class ResnetBlock(nn.Module):
     """https://arxiv.org/abs/1512.03385"""
-    def __init__(self, dim, dim_out, *, cond_emb_dim=None, groups=8, cylindrical=False):
+    def __init__(self, dim, dim_out, *, cond_emb_dim=None, groups=8, cylindrical=False, kernel_size=3):
         super().__init__()
         self.mlp = (
             nn.Sequential(nn.SiLU(), nn.Linear(cond_emb_dim, dim_out))
@@ -184,8 +184,8 @@ class ResnetBlock(nn.Module):
             if cylindrical
             else nn.Conv3d(dim, dim_out, kernel_size=1)
         )
-        self.block1 = Block(dim, dim_out, groups=groups, cylindrical=cylindrical)
-        self.block2 = Block(dim_out, dim_out, groups=groups, cylindrical=cylindrical)
+        self.block1 = Block(dim, dim_out, groups=groups, cylindrical=cylindrical, kernel_size=kernel_size)
+        self.block2 = Block(dim_out, dim_out, groups=groups, cylindrical=cylindrical, kernel_size=kernel_size)
         self.res_conv = conv if dim != dim_out else nn.Identity()
 
     def forward(self, x, time_emb=None):
@@ -204,7 +204,7 @@ class ConvNextBlock(nn.Module):
     """https://arxiv.org/abs/2201.03545"""
 
     def __init__(
-        self, dim, dim_out, *, cond_emb_dim=None, mult=2, norm=True, cylindrical=False
+        self, dim, dim_out, *, cond_emb_dim=None, mult=2, norm=True, cylindrical=False, kernel_size=3
     ):
         super().__init__()
         self.mlp = (
@@ -222,10 +222,10 @@ class ConvNextBlock(nn.Module):
 
         self.net = nn.Sequential(
             nn.GroupNorm(1, dim) if norm else nn.Identity(),
-            conv_op(dim, dim_out * mult, kernel_size=3, padding=1),
+            conv_op(dim, dim_out * mult, kernel_size=kernel_size, padding=1),
             nn.GELU(),
             nn.GroupNorm(1, dim_out * mult),
-            conv_op(dim_out * mult, dim_out, kernel_size=3, padding=1),
+            conv_op(dim_out * mult, dim_out, kernel_size=kernel_size, padding=1),
         )
 
         self.res_conv = (
@@ -540,6 +540,9 @@ class CondUnet(nn.Module):
         cond_embed=True,
         cond_size=1,
         no_time=False,
+        n_mid_blocks=2,
+        n_up_blocks=1,
+        n_down_blocks=1,
     ):
         super().__init__()
 
@@ -612,6 +615,7 @@ class CondUnet(nn.Module):
         self.ups = nn.ModuleList([])
         self.downs_attn = nn.ModuleList([])
         self.ups_attn = nn.ModuleList([])
+        self.mids = nn.ModuleList([])
         self.extra_upsamples = []
         self.Z_even = []
         num_resolutions = len(in_out)
@@ -638,7 +642,7 @@ class CondUnet(nn.Module):
                 nn.ModuleList(
                     [
                         block_klass(dim_in, dim_out, cond_emb_dim=cond_dim),
-                        block_klass(dim_out, dim_out, cond_emb_dim=cond_dim),
+                        nn.ModuleList([block_klass(dim_out, dim_out, cond_emb_dim=cond_dim) for _ in range(n_down_blocks)]),
                         Downsample(dim_out, cylindrical, compress_Z=compress_Z)
                         if not is_last
                         else nn.Identity(),
@@ -655,12 +659,13 @@ class CondUnet(nn.Module):
                 )
 
         mid_dim = layer_sizes[-1]
-        self.mid_block1 = block_klass(mid_dim, mid_dim, cond_emb_dim=cond_dim)
-        if self.mid_attn:
-            self.mid_attn = Residual(
-                PreNorm(mid_dim, LinearAttention(mid_dim, cylindrical=cylindrical))
+        for mid in range(n_mid_blocks): 
+            self.mids.append(block_klass(mid_dim, mid_dim, cond_emb_dim=cond_dim))
+            if self.mid_attn and mid!=n_mid_blocks:
+                self.mids.append(Residual(
+                    PreNorm(mid_dim, LinearAttention(mid_dim, cylindrical=cylindrical))
+                )
             )
-        self.mid_block2 = block_klass(mid_dim, mid_dim, cond_emb_dim=cond_dim)
 
         for ind, (dim_in, dim_out) in enumerate(reversed(in_out)):
             is_last = ind >= (num_resolutions - 1)
@@ -672,7 +677,7 @@ class CondUnet(nn.Module):
                 nn.ModuleList(
                     [
                         block_klass(dim_out * 2, dim_in, cond_emb_dim=cond_dim),
-                        block_klass(dim_in, dim_in, cond_emb_dim=cond_dim),
+                        nn.ModuleList(block_klass(dim_in, dim_in, cond_emb_dim=cond_dim) for _ in range(n_up_blocks)),
                         Upsample(
                             dim_in, extra_upsample, cylindrical, compress_Z=compress_Z
                         )
@@ -713,7 +718,8 @@ class CondUnet(nn.Module):
         # downsample
         for i, (block1, block2, downsample) in enumerate(self.downs):
             x = block1(x, conditions)
-            x = block2(x, conditions)
+            for block in block2:
+                x = block(x, conditions)
             if self.block_attn:
                 x = self.downs_attn[i](x)
             h.append(x)
@@ -726,10 +732,13 @@ class CondUnet(nn.Module):
                 h[i] = add_fn(h[i], control_h)
 
         # bottleneck
-        x = self.mid_block1(x, conditions)
-        if self.mid_attn:
-            x = self.mid_attn(x)
-        x = self.mid_block2(x, conditions)
+        for index, mid in enumerate(self.mids):
+            # If there is mid attention, it's the second item
+            if (index%2 == 1) and self.mid_attn:
+                x = mid(x)
+            else:
+                x = mid(x, conditions)
+
 
         # Add hidden state from controlnet
         if controls is not None:
@@ -737,10 +746,11 @@ class CondUnet(nn.Module):
             x = add_fn(x, control_h)
 
         # upsample
-        for i, (block1, block2, upsample) in enumerate(self.ups):
-            x = torch.cat((x, h.pop()), dim=1)
+        for i, ((block1, block2, upsample), skip_connection) in enumerate(zip(self.ups, reversed(h))):
+            x = torch.cat((x, skip_connection), dim=1)
             x = block1(x, conditions)
-            x = block2(x, conditions)
+            for block in block2:
+                x = block(x, conditions)
             if self.block_attn:
                 x = self.ups_attn[i](x)
             x = upsample(x)
