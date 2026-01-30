@@ -212,14 +212,17 @@ class TrainOptimize(ray.tune.Trainable):
         self.config = base_config
         self.n_steps = config.get("NSTEPS", 50)
 
-        if "n_unet_layers" in config.keys():
-            init_size = config.get("init_unet")
-            n_layers = config.get("n_unet_layers")
-            final_layer = int(config.get("layer_ratio") * init_size)  
-            unet_layers = [init_size for _ in range(n_layers)]
-            unet_layers.append(final_layer)
-            
-            self.config["LAYER_SIZE_UNET"] = unet_layers
+        if "BASE_CHANNELS" in config.keys():
+            depth = config.get('UNET_DEPTH', 4)
+            base_channels = config['BASE_CHANNELS']
+            channel_mult = config.get("CHANNEL_MULT", 8)
+        
+            base_size = int(base_channels/channel_mult)*channel_mult
+            layer_sizes = [base_size] + [base_size + base_size*i for i in range(depth)]
+
+            self.config["LAYER_SIZE_UNET"] = layer_sizes
+            self.config['COND_SIZE_UNET'] = base_channels*(depth+1)
+            self.config['BLOCK_GROUPS'] = channel_mult
 
         self.objectives = [EvalFPD(), EvalCount()]
         self.objective_names = ['FDP', 'COUNT']
@@ -256,7 +259,6 @@ class TrainOptimize(ray.tune.Trainable):
         except RuntimeError as err:
             print(f"Error in training model: {err}")
             print(traceback.print_exception(err))
-            assert False
             model = None
         return model
 
@@ -300,10 +302,17 @@ class Optimize:
     Exceptions - 
     * LAYER_SIZE_UNET (u-net architecture settings) - becomes a dictionary with the integer list fields: 
         {
-            "init_unet": The range of the initial layer size, 
-            "n_unet_layers": Range for up/down operations in the unet, 
-            "layer_ratio": Range for how small the inner layer is compared to init_unet
+            "BASE_CHANNELS":  Size of the first block of the unet
+            "CHANNEL_MULT": How quickly blocks layers scale 
+            "UNET_DEPTH": The number of total layers blocks
+        
         }
+        Such that: 
+            "BLOCK_GROUPS" = "CHANNEL_MULT" (insure the geometric works out)
+            "LAYER_SIZE_UNET" = [int(BASE_CHANNELS/CHANNEL_MULT)*CHANNEL_MULT * i for i range(DEPTH)]
+
+    * COND_SIZE_UNET (u-net archective setting) - Dependent on unet settings such that: 
+        "COND_SIZE_UNET":  int(BASE_CHANNELS/CHANNEL_MULT)*CHANNEL_MULT * (depth+1)
     * SAMPLER_SETTINGS (where SAMPLER="Restart") - has the following custom fields to create "RESTART_LIST": 
         {
             "RESTART_I": Integer range for number of possible restart configurations, 
@@ -382,9 +391,10 @@ class Optimize:
 
         # Sub parameters for UNet architecture
         if "LAYER_SIZE_UNET" in optimized_section.keys(): 
-            config_space['init_unet']  = ray.tune.qrandint(*optimized_section["LAYER_SIZE_UNET"]["init_unet"], 2)
-            config_space['n_unet_layers'] = ray.tune.randint(*optimized_section["LAYER_SIZE_UNET"]["n_unet_layers"])
-            config_space['layer_ratio'] = ray.tune.uniform(*optimized_section["LAYER_SIZE_UNET"]["layer_ratio"])
+
+            config_space['BASE_CHANNELS']  = ray.tune.qrandint(*optimized_section["LAYER_SIZE_UNET"]["BASE_CHANNELS"], 8)
+            config_space['UNET_DEPTH'] = ray.tune.randint(*optimized_section["LAYER_SIZE_UNET"]["UNET_DEPTH"])
+            config_space['CHANNEL_MULT'] = ray.tune.uniform(*optimized_section["LAYER_SIZE_UNET"]["CHANNEL_MULT"])
             
         return config_space
     
