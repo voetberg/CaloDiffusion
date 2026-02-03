@@ -8,7 +8,7 @@
     "VAL_FILES":[ "HGCal_showers_william_v2/HGCal_showers12.h5"],
     "EVAL":[ "HGCal_showers_william_v2/HGCal_showers13.h5", "HGCal_showers_william_v2/HGCal_showers14.h5"],
     "HGCAL" : true,
-    "BIN_FILE": "/home/oamram/CaloDiffusion/HGCalShowers/geoms/geom_william.pkl",
+    "BIN_FILE": "/Users/maggiev/Documents/repo/CaloDiffusion/HGCalShowers/geoms/geom_william.pkl",
     "PART_TYPE" : "photon",
     "AVG_SHOWER_LOC" : "dataset_1_photons_avg_showers.h5",
     "DATASET_NUM" : 111,
@@ -53,14 +53,14 @@
     "SHOWER_EMBED" : "NN-pre-embed",
     "CHECKPOINT_NAME":"HGCal_opt",
     "OPTIMIZE": {
-        "UNET_DEPTH": [3, 4, 5, 6, 7, 8],
-        "BASE_CHANNELS": [24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120], 
-        "CHANNEL_MULT": [4, 5, 6, 7, 8, 9],
+        "UNET_DEPTH": [3, 8],
+        "BASE_CHANNELS": [24, 120], 
+        "CHANNEL_MULT": [4, 9],
         "BLOCK_ATTN": [false, true],
         "MID_ATTN": [false, true],
-        "MID_BLOCKS": [1, 2, 3, 4, 5, 6, 7], 
-        "DOWN_BLOCKS": [1, 2, 3, 4, 5, 6, 7], 
-        "UP_BLOCKS": [1, 2, 3, 4, 5, 6, 7]
+        "MID_BLOCKS": [1, 7], 
+        "DOWN_BLOCKS": [1, 7], 
+        "UP_BLOCKS": [1, 7]
     }
 }
 

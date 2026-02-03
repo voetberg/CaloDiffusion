@@ -233,6 +233,7 @@ class TrainOptimize(ray.tune.Trainable):
         self.objective_names = ["FDP", "LOSS"]
         self.objectives = [EvalFPD(), EvalLoss()]
 
+        self.config['MAXEPOCH'] = 3
         self.flags = flags
         self.trainer_module = trainer
 
@@ -251,10 +252,11 @@ class TrainOptimize(ray.tune.Trainable):
 
     def _train(self): 
         try: 
-            trainer_instance = self.trainer_module(flags=self.flags, config=self.config, save_model=False, load_data=True)
-            trainer_instance.init_model()
-            trainer_instance.train()
-            model = trainer_instance.model
+            self.config["MAXEPOCHS"] += 3
+            self.flags.reset_training = False
+            self.model_instance = self.trainer_module(flags=self.flags, config=self.config, save_model=True, load_data=True)
+            self.model_instance.train()
+            model = self.trainer_instance.model
 
         except RuntimeError as err:
             print(f"Error in training model: {err}")
@@ -263,7 +265,7 @@ class TrainOptimize(ray.tune.Trainable):
         return model
 
     def step(self):
-        self.current_step +=1
+        self.current_step +=3
         model = self._train()
 
         if model is None:
@@ -277,6 +279,7 @@ class TrainOptimize(ray.tune.Trainable):
                 model, samples, energies
             )
         objectives['step'] = self.current_step
+        objectives['failure'] = model is None
         ray.tune.report(objectives)
 
         return objectives
@@ -403,7 +406,8 @@ class Optimize:
             name=self.experiment_name,
             storage_path=self.checkpoint_folder,
             stop={
-                "step": self.config.get("MAXEPOCH", 100),
+                "step": self.config.get("MAXEPOCH", 100) if not self.inference else 1,
+                "failure": True
             },
             checkpoint_config=ray.tune.CheckpointConfig(
                 checkpoint_frequency=5, checkpoint_at_end=True, 
