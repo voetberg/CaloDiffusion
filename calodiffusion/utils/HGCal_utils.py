@@ -4,6 +4,7 @@ from sklearn.isotonic import IsotonicRegression
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+from einops import rearrange
 
 import h5py as h5
 import torch
