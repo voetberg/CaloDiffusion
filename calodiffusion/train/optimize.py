@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+import re
 import traceback
 from typing import Any, Iterable, Literal, Sequence
 
@@ -252,7 +253,7 @@ class TrainOptimize(ray.tune.Trainable):
 
     def _train(self): 
         try: 
-            self.config["MAXEPOCHS"] += 3
+            self.config["MAXEPOCH"] += 3
             self.flags.reset_training = False
             self.model_instance = self.trainer_module(flags=self.flags, config=self.config, save_model=True, load_data=True)
             self.model_instance.train()
@@ -454,14 +455,27 @@ class Optimize:
         ray.init()
         try: 
             n_accessable_gpu = len(os.environ['SLURM_JOB_GPUS'].split(','))
-            cpu_ratio = int(os.environ['SLURM_JOB_CPUS_PER_NODE'])/n_accessable_gpu
+            try: 
+                n_cpu = int(os.environ['SLURM_JOB_CPUS_PER_NODE'])
+            except ValueError:
+                n_cpu = os.environ['SLURM_JOB_CPUS_PER_NODE']
+                match = re.match(r'(\d+)(?:\(x(\d+)\))?', n_cpu)
+                if match:
+                    cpus_per_node = int(match.group(1))
+                    num_nodes = int(match.group(2)) if match.group(2) else 1
+                    
+                    n_cpu = cpus_per_node * num_nodes
+                else: 
+                    raise ValueError("Cannot parse CPU from %s" % n_cpu)
+                
+            cpu_ratio = n_cpu/n_accessable_gpu
             n_gpu = 1
         except KeyError: 
             n_gpu = 0 
             cpu_ratio = 1
 
         if cpu_ratio >= 64:  # Estimated number of max threads 
-            n_cpu_per_job =  os.environ['NUMEXPR_MAX_THREADS'] - 2
+            n_cpu_per_job =  os.environ.get('NUMEXPR_MAX_THREADS', 64) - 2
         else: 
             n_cpu_per_job = int(cpu_ratio)
             
