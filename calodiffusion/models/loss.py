@@ -141,6 +141,39 @@ class Loss(ABC):
 
         return self.loss_function(model, data, E, sigma=sigma, noise=noise, layers=layers)
 
+
+class conditioned_hybrid_weight(Loss): 
+    def __init__(self, config, n_steps, loss_type='l2'):
+        super().__init__(config, n_steps, loss_type)
+        if loss_type != 'l2':
+            raise ValueError("Can only use a weighted L2 Loss if conditioning loss on energy. Please use `hybrid weight` if you want to use other loss types.")
+
+    def custom_loss(self, predict, target, energy):
+
+        def l2(prediction, target, weight): 
+            return  (weight * ((prediction - target) ** 2)).sum() / (torch.mean(weight) * np.prod(target.shape))
+
+        running_loss = torch.zeros(energy.shape[-1])
+        for index in range(energy.shape[-1]):
+            weight = torch.reshape(energy[:,index], (target.shape[0], *((1,) * (len(target.shape) - 1))))
+            running_loss[index] = l2(predict, target, weight)
+
+        return running_loss.mean(dim=-1)
+
+
+    def loss_function(self, model, data, E, sigma=None, noise=None, layers=None):
+        x_noisy = data + sigma * noise
+
+        x0_pred = model.denoise(
+                x_noisy, E=E, sigma=sigma, layers=layers
+            )
+        
+        # const_shape = (data.shape[0], *((1,) * (len(data.shape) - 1)))
+        # weight = torch.reshape(1.0 + (1.0 / sigma**2), const_shape)
+
+        return self.custom_loss(predict=x0_pred, target=data, energy=E)
+
+
 class minsnr(Loss): 
     def __init__(self, config, n_steps) -> None:
         # From https://arxiv.org/pdf/2303.09556 
@@ -207,4 +240,4 @@ class mean_pred(Loss):
         weight = 1.0 / (sigma**2)
         pred = x0_pred
 
-        return self.loss(pred, target, weight)
+        return self._loss(pred, target, weight)
