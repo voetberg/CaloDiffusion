@@ -258,8 +258,9 @@ class DPMAdaptive(DPM):
         sigma_min, sigma_max = self.sigmas[-1], self.sigmas[0]
         t_start, t_end = DPM.time_fn(sigma_max), DPM.time_fn(sigma_min)
         noise_sampler = sampling.default_noise_sampler(x)
-        lambda_0, lambda_s = noise_sampler(sigma_min, sigma_max)
-
+        lambda_s = noise_sampler(sigma_min, sigma_max)
+        lambda_0 = lambda_s
+        
         if sigma_min <= 0 or sigma_max <= 0:
             raise ValueError("sigma_min and sigma_max must not be 0")
 
@@ -303,7 +304,7 @@ class DPMAdaptive(DPM):
                 x_prev = x_low
                 x = x_high + su * self.s_noise * noise_sampler(DPM.sigma_fn(s), DPM.sigma_fn(t))
                 s = t
-                _, lambda_s = noise_sampler(x, self.sigma_fn(s))
+                lambda_s = noise_sampler(x, self.sigma_fn(s))
 
         return x
 

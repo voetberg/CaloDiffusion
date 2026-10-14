@@ -147,7 +147,9 @@ class CaloDiffusion(Diffusion):
     ):
         embed: dict[str, callable] = {
             "sigma": lambda sigma: sigma / (1 + sigma**2).sqrt(), 
-            "log": lambda sigma:  0.5 * torch.log(sigma)
+            "log": lambda sigma:  0.5 * torch.log(sigma), 
+            "id": lambda sigma: sigma,
+            "sin": lambda sigma: torch.sin(sigma)
         }
         return embed[self.time_embed](sigma)
     
@@ -156,7 +158,7 @@ class CaloDiffusion(Diffusion):
         loss_function_name = type(self.loss_function).__name__
 
         scales = self.loss_function.get_scaling(sigma)
-        pred = self.forward(x * scales['c_in'], E, t_emb, layers = layers )
+        pred = self.forward(x * scales['c_in'], E, t_emb, layers = layers)
 
         if('noise_pred' in loss_function_name):
             return (x - sigma * pred)

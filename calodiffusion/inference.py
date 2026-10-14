@@ -83,8 +83,8 @@ def sample(ctx, generated, sample_file, sample_steps, sample_algo, sample_offset
         raise ValueError("model-loc is required")
     
     ctx.obj.model_loc = model_loc
-    ctx.obj.sample_steps = sample_steps
-    ctx.obj.sample_algo = sample_algo 
+    #ctx.obj.sample_steps = sample_steps
+    #ctx.obj.sample_algo = sample_algo 
     ctx.obj.sample_offset = sample_offset
     ctx.obj.sparse_decoding = sparse_decoding
     ctx.obj.sparse_per_batch = sparse_per_batch
